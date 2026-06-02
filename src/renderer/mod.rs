@@ -168,7 +168,7 @@ impl Renderer {
     }
 
     fn draw_vehicle(&mut self, v: &Vehicle) {
-        let color = match v.direction {
+        let color = match v.original_direction {
             Direction::North => C_NORTH,
             Direction::South => C_SOUTH,
             Direction::East => C_EAST,

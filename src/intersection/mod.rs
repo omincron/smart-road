@@ -34,10 +34,10 @@ const CONFLICTS: [[bool; 12]; 12] = [
     //          S_r    S_s    S_l    N_r    N_s    N_l    W_r    W_s    W_l    E_r    E_s    E_l
     /* S_r  */ [false, false, false, false, false, false, false, false, false, false, false, false],
     /* S_s  */ [false, false, false, false, false, true,  false, true,  false, false, true,  true ],
-    /* S_l  */ [false, false, false, false, true,  false, false, true,  true,  false, false, true ],
+    /* S_l  */ [false, false, false, false, true,  true,  false, true,  true,  false, false, true ],
     /* N_r  */ [false, false, false, false, false, false, false, false, false, false, false, false],
     /* N_s  */ [false, false, true,  false, false, false, false, true,  true,  false, true,  false],
-    /* N_l  */ [false, true,  false, false, false, false, false, false, true,  false, true,  true ],
+    /* N_l  */ [false, true,  true,  false, false, false, false, false, true,  false, true,  true ],
     /* W_r  */ [false, false, false, false, false, false, false, false, false, false, false, false],
     /* W_s  */ [false, true,  true,  false, true,  false, false, false, false, false, false, true ],
     /* W_l  */ [false, false, true,  false, true,  true,  false, false, false, false, true,  true ],
@@ -63,8 +63,9 @@ pub fn crossing_waypoints(direction: Direction, route: Route) -> Vec<(f32, f32)>
 
     match (direction, route) {
         // ── right turns (corner clips) ────────────────────────────────────
+        // Exit into the outermost lane of the cross street (nearest curb).
         (Direction::South, Route::Right) => vec![(sb(0.0), cy - rw), (cx - rw, wb(0.0))],
-        (Direction::North, Route::Right) => vec![(nb(2.0), cy + rw), (cx + rw, eb(0.0))],
+        (Direction::North, Route::Right) => vec![(nb(2.0), cy + rw), (cx + rw, eb(2.0))],
         (Direction::West,  Route::Right) => vec![(cx + rw, wb(0.0)), (nb(2.0), cy - rw)],
         (Direction::East,  Route::Right) => vec![(cx - rw, eb(2.0)), (sb(0.0), cy + rw)],
 
@@ -75,15 +76,18 @@ pub fn crossing_waypoints(direction: Direction, route: Route) -> Vec<(f32, f32)>
         (Direction::East,  Route::Straight) => vec![(cx - rw, eb(1.0)), (cx + rw, eb(1.0))],
 
         // ── left turns (bent path through centre) ────────────────────────
+        // Exit into the innermost lane of the cross street.
+        // S/Left turns east  → must use eastbound y (eb), not westbound.
+        // N/Left turns west  → must use westbound y (wb), not eastbound.
         (Direction::South, Route::Left) => vec![
             (sb(2.0), cy - rw),
-            (sb(2.0), wb(2.0)), // turn point
-            (cx + rw, wb(2.0)),
+            (sb(2.0), eb(0.0)), // turn point (past centre into eastbound half)
+            (cx + rw, eb(0.0)),
         ],
         (Direction::North, Route::Left) => vec![
             (nb(0.0), cy + rw),
-            (nb(0.0), eb(0.0)), // turn point
-            (cx - rw, eb(0.0)),
+            (nb(0.0), wb(2.0)), // turn point (past centre into westbound half)
+            (cx - rw, wb(2.0)),
         ],
         (Direction::West, Route::Left) => vec![
             (cx + rw, wb(2.0)),

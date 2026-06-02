@@ -8,7 +8,7 @@ use crate::vehicle::{Direction, Route, Vehicle};
 const CENTER_X: i32 = WINDOW_W as i32 / 2;
 const CENTER_Y: i32 = WINDOW_H as i32 / 2;
 
-const RANDOM_INTERVAL: u32 = 60; // ticks between random spawns (~1 s at 60 fps)
+const RANDOM_INTERVAL: u32 = 30; // ticks between random spawns (~0.5 s at 60 fps)
 
 pub struct InputHandler {
     pub random_mode: bool,

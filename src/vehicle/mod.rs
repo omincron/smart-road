@@ -51,6 +51,7 @@ pub struct Vehicle {
     pub x: f32,
     pub y: f32,
     pub direction: Direction,
+    pub original_direction: Direction, // set at spawn, never changes; used for stable color
     pub route: Route,
     pub speed: Speed,
     pub state: VehicleState,
@@ -74,6 +75,7 @@ impl Vehicle {
             x,
             y,
             direction,
+            original_direction: direction,
             route,
             speed: Speed::Normal,
             state: VehicleState::Approaching,

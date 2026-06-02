@@ -9,8 +9,8 @@ pub const WINDOW_W: u32 = 800;
 pub const WINDOW_H: u32 = 800;
 pub const LANE_W: i32 = 40;
 
-const CENTER_X: i32 = WINDOW_W as i32 / 2; // 400
-const CENTER_Y: i32 = WINDOW_H as i32 / 2; // 400
+pub const CENTER_X: i32 = WINDOW_W as i32 / 2; // 400
+pub const CENTER_Y: i32 = WINDOW_H as i32 / 2; // 400
 pub const ROAD_W: i32 = LANE_W * 3; // 120px per direction (3 lanes)
 
 // ── colours ──────────────────────────────────────────────────────────────────

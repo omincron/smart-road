@@ -56,11 +56,15 @@ pub struct Vehicle {
     pub state: VehicleState,
     pub angle_deg: f32, // clockwise degrees; 0 = pointing up (north)
 
+    // path through the intersection — set when a reservation is granted
+    pub crossing_path: Vec<(f32, f32)>,
+    pub waypoint_idx: usize,
+
     // stats — filled in as simulation progresses
     pub detection_tick: u64,
     pub exit_tick: Option<u64>,
     pub distance_traveled: f32,
-    pub min_gap_seen: f32, // closest another vehicle got during this trip
+    pub min_gap_seen: f32,
 }
 
 impl Vehicle {
@@ -74,6 +78,8 @@ impl Vehicle {
             speed: Speed::Normal,
             state: VehicleState::Approaching,
             angle_deg: direction_to_angle(direction),
+            crossing_path: Vec::new(),
+            waypoint_idx: 0,
             detection_tick: 0,
             exit_tick: None,
             distance_traveled: 0.0,
@@ -85,7 +91,7 @@ impl Vehicle {
         self.exit_tick.map(|e| e - self.detection_tick)
     }
 
-    /// Move one tick along the current heading (straight-line; turning overrides this).
+    /// Straight-line advance along current direction (Approaching / Exiting).
     pub fn advance(&mut self) {
         let d = self.speed.pixels_per_tick();
         match self.direction {
@@ -96,9 +102,37 @@ impl Vehicle {
         }
         self.distance_traveled += d;
     }
+
+    /// Move one tick along the pre-computed crossing path.
+    /// Returns true when the last waypoint has been reached (vehicle has exited).
+    pub fn advance_crossing(&mut self) -> bool {
+        if self.waypoint_idx >= self.crossing_path.len() {
+            return true;
+        }
+        let (tx, ty) = self.crossing_path[self.waypoint_idx];
+        let dx = tx - self.x;
+        let dy = ty - self.y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let speed = self.speed.pixels_per_tick();
+
+        if dist <= speed {
+            self.x = tx;
+            self.y = ty;
+            self.waypoint_idx += 1;
+            self.distance_traveled += dist;
+            self.waypoint_idx >= self.crossing_path.len()
+        } else {
+            self.x += dx / dist * speed;
+            self.y += dy / dist * speed;
+            self.distance_traveled += speed;
+            // keep angle aligned with movement vector
+            self.angle_deg = (dx.atan2(-dy).to_degrees() + 360.0) % 360.0;
+            false
+        }
+    }
 }
 
-fn direction_to_angle(dir: Direction) -> f32 {
+pub fn direction_to_angle(dir: Direction) -> f32 {
     match dir {
         Direction::North => 0.0,
         Direction::East => 90.0,

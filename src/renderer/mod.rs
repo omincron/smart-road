@@ -181,6 +181,54 @@ impl Renderer {
             .unwrap();
     }
 
+    /// Dark semi-transparent overlay shown when the simulation ends.
+    pub fn draw_stats_overlay(&mut self) {
+        self.canvas.set_blend_mode(sdl2::render::BlendMode::Blend);
+
+        // Dim the whole screen
+        self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 180));
+        self.canvas.fill_rect(Rect::new(0, 0, WINDOW_W, WINDOW_H)).unwrap();
+
+        // Central info panel
+        let pw: u32 = 320;
+        let ph: u32 = 120;
+        let px = (WINDOW_W as i32 - pw as i32) / 2;
+        let py = (WINDOW_H as i32 - ph as i32) / 2;
+
+        self.canvas.set_draw_color(Color::RGBA(20, 20, 40, 230));
+        self.canvas.fill_rect(Rect::new(px, py, pw, ph)).unwrap();
+
+        // Border
+        self.canvas.set_draw_color(Color::RGB(180, 180, 220));
+        for t in 0..3 {
+            self.canvas
+                .draw_rect(Rect::new(px - t, py - t, pw + 2 * t as u32, ph + 2 * t as u32))
+                .unwrap();
+        }
+
+        // Three coloured bars as a simple "stats ended" indicator
+        let bar_w: u32 = 60;
+        let bar_h: u32 = 20;
+        let gap: i32 = 20;
+        let total = (bar_w * 3) as i32 + gap * 2;
+        let bx = px + (pw as i32 - total) / 2;
+        let by = py + (ph as i32 - bar_h as i32) / 2;
+
+        let colours = [
+            Color::RGB(220, 80, 80),
+            Color::RGB(80, 180, 80),
+            Color::RGB(80, 120, 220),
+        ];
+        for (i, c) in colours.iter().enumerate() {
+            self.canvas.set_draw_color(*c);
+            self.canvas
+                .fill_rect(Rect::new(bx + i as i32 * (bar_w as i32 + gap), by, bar_w, bar_h))
+                .unwrap();
+        }
+
+        self.canvas.set_blend_mode(sdl2::render::BlendMode::None);
+    }
+
     pub fn present(&mut self) {
         self.canvas.present();
     }

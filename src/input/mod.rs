@@ -21,7 +21,8 @@ impl InputHandler {
         InputHandler { random_mode: false, random_timer: 0, next_id: 0 }
     }
 
-    /// Handle one SDL2 event. Returns false when the simulation should exit.
+    /// Handle one SDL2 event. Only processes vehicle-spawn keys; returns false
+    /// when the window is closed (Quit event). Esc is handled by the caller.
     pub fn handle_event<R: Rng>(
         &mut self,
         event: &Event,
@@ -31,7 +32,6 @@ impl InputHandler {
         match event {
             Event::Quit { .. } => return false,
             Event::KeyDown { keycode: Some(key), .. } => match *key {
-                Keycode::Escape => return false,
                 Keycode::Up    => self.try_spawn(Direction::North, vehicles, rng),
                 Keycode::Down  => self.try_spawn(Direction::South, vehicles, rng),
                 Keycode::Right => self.try_spawn(Direction::East,  vehicles, rng),

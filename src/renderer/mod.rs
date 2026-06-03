@@ -9,18 +9,14 @@ use crate::vehicle::Vehicle;
 
 pub const WINDOW_W: u32 = 800;
 pub const WINDOW_H: u32 = 800;
-pub const LANE_W: i32 = 40;
 
 pub const CENTER_X: i32 = WINDOW_W as i32 / 2; // 400
 pub const CENTER_Y: i32 = WINDOW_H as i32 / 2; // 400
-pub const ROAD_W: i32 = LANE_W * 3; // 120px per direction (3 lanes)
+pub const ROAD_W: i32 = 82;  // half-width of road from center — matched to cross-road.png
+pub const LANE_W: i32 = ROAD_W / 3; // 27px per lane
 
 // ── colours ──────────────────────────────────────────────────────────────────
-const C_BG: Color = Color { r: 34, g: 85, b: 34, a: 255 };    // grass
-const C_ROAD: Color = Color { r: 50, g: 50, b: 50, a: 255 };  // asphalt
-const C_MARK: Color = Color { r: 160, g: 160, b: 160, a: 255 }; // lane dashes / dividers
 const C_STOP: Color = Color { r: 255, g: 255, b: 255, a: 255 }; // stop lines
-
 
 // Rendered size of a vehicle sprite (portrait — car faces North by default).
 const CAR_W: u32 = 24;
@@ -29,16 +25,17 @@ const CAR_H: u32 = 34;
 pub struct Renderer {
     pub canvas: Canvas<Window>,
     texture_creator: TextureCreator<WindowContext>,
-    // SAFETY: car_texture is declared after texture_creator so it is dropped first,
-    // satisfying SDL2's requirement that textures are destroyed before their creator.
+    // SAFETY: both textures are declared after texture_creator so they are dropped first.
+    road_texture: Texture<'static>,
     car_texture: Texture<'static>,
 }
 
 impl Renderer {
     pub fn new(canvas: Canvas<Window>) -> Self {
         let texture_creator = canvas.texture_creator();
+        let road_texture = load_rgb_texture(&texture_creator, "assets/cross-road.png");
         let car_texture = load_car_texture(&texture_creator);
-        Renderer { canvas, texture_creator, car_texture }
+        Renderer { canvas, texture_creator, road_texture, car_texture }
     }
 
     fn draw_text(&mut self, font: &sdl2::ttf::Font, text: &str, x: i32, y: i32, color: Color) {
@@ -50,107 +47,17 @@ impl Renderer {
     }
 
     pub fn clear(&mut self) {
-        self.canvas.set_draw_color(C_BG);
+        self.canvas.set_draw_color(Color::BLACK);
         self.canvas.clear();
     }
 
     pub fn draw_road(&mut self) {
-        self.canvas.set_draw_color(C_ROAD);
+        // Blit the cross-road PNG scaled to fill the window.
+        let dest = Rect::new(0, 0, WINDOW_W, WINDOW_H);
+        self.canvas.copy(&self.road_texture, None, Some(dest)).unwrap();
 
-        // vertical strip (full height)
-        self.canvas
-            .fill_rect(Rect::new(CENTER_X - ROAD_W, 0, (ROAD_W * 2) as u32, WINDOW_H))
-            .unwrap();
-
-        // horizontal strip (full width)
-        self.canvas
-            .fill_rect(Rect::new(0, CENTER_Y - ROAD_W, WINDOW_W, (ROAD_W * 2) as u32))
-            .unwrap();
-
-        self.draw_centre_dividers();
-        self.draw_lane_dashes();
+        // Draw stop lines on top so they match the simulation's lane geometry.
         self.draw_stop_lines();
-    }
-
-    /// Solid centre lines separating opposing traffic on each road arm.
-    fn draw_centre_dividers(&mut self) {
-        self.canvas.set_draw_color(C_MARK);
-        const T: i32 = 3;
-
-        // vertical road — above and below the intersection box
-        self.canvas
-            .fill_rect(Rect::new(CENTER_X - T / 2, 0, T as u32, (CENTER_Y - ROAD_W) as u32))
-            .unwrap();
-        self.canvas
-            .fill_rect(Rect::new(
-                CENTER_X - T / 2,
-                CENTER_Y + ROAD_W,
-                T as u32,
-                (WINDOW_H as i32 - CENTER_Y - ROAD_W) as u32,
-            ))
-            .unwrap();
-
-        // horizontal road — left and right of the intersection box
-        self.canvas
-            .fill_rect(Rect::new(0, CENTER_Y - T / 2, (CENTER_X - ROAD_W) as u32, T as u32))
-            .unwrap();
-        self.canvas
-            .fill_rect(Rect::new(
-                CENTER_X + ROAD_W,
-                CENTER_Y - T / 2,
-                (WINDOW_W as i32 - CENTER_X - ROAD_W) as u32,
-                T as u32,
-            ))
-            .unwrap();
-    }
-
-    /// Dashed lane dividers inside each road arm, outside the intersection box.
-    fn draw_lane_dashes(&mut self) {
-        self.canvas.set_draw_color(C_MARK);
-
-        for i in 1..3_i32 {
-            // southbound lanes (left half of vertical road, x: 280–400)
-            let x = CENTER_X - ROAD_W + i * LANE_W;
-            self.dashes_v(x, 0, CENTER_Y - ROAD_W);
-            self.dashes_v(x, CENTER_Y + ROAD_W, WINDOW_H as i32);
-
-            // northbound lanes (right half, x: 400–520)
-            let x = CENTER_X + i * LANE_W;
-            self.dashes_v(x, 0, CENTER_Y - ROAD_W);
-            self.dashes_v(x, CENTER_Y + ROAD_W, WINDOW_H as i32);
-
-            // westbound lanes (top half of horizontal road, y: 280–400)
-            let y = CENTER_Y - ROAD_W + i * LANE_W;
-            self.dashes_h(0, CENTER_X - ROAD_W, y);
-            self.dashes_h(CENTER_X + ROAD_W, WINDOW_W as i32, y);
-
-            // eastbound lanes (bottom half, y: 400–520)
-            let y = CENTER_Y + i * LANE_W;
-            self.dashes_h(0, CENTER_X - ROAD_W, y);
-            self.dashes_h(CENTER_X + ROAD_W, WINDOW_W as i32, y);
-        }
-    }
-
-    fn dashes_v(&mut self, x: i32, y0: i32, y1: i32) {
-        const DASH: i32 = 12;
-        const GAP: i32 = 10;
-        let mut y = y0;
-        while y < y1 {
-            let h = DASH.min(y1 - y) as u32;
-            self.canvas.fill_rect(Rect::new(x - 1, y, 2, h)).unwrap();
-            y += DASH + GAP;
-        }
-    }
-
-    fn dashes_h(&mut self, x0: i32, x1: i32, y: i32) {
-        const DASH: i32 = 12;
-        const GAP: i32 = 10;
-        let mut x = x0;
-        while x < x1 {
-            let w = DASH.min(x1 - x) as u32;
-            self.canvas.fill_rect(Rect::new(x, y - 1, w, 2)).unwrap();
-            x += DASH + GAP;
-        }
     }
 
     /// White stop lines at the entry edge of the intersection for each direction.
@@ -240,6 +147,21 @@ impl Renderer {
     pub fn present(&mut self) {
         self.canvas.present();
     }
+}
+
+/// Decode an RGB(A) PNG and upload it as an SDL2 texture (no background stripping).
+fn load_rgb_texture(tc: &TextureCreator<WindowContext>, path: &str) -> Texture<'static> {
+    let img = image::open(path)
+        .unwrap_or_else(|_| panic!("failed to open {path}"))
+        .into_rgba8();
+    let (w, h) = img.dimensions();
+    let mut pixels = img.into_raw();
+    let surface = Surface::from_data(&mut pixels, w, h, w * 4, PixelFormatEnum::RGBA32)
+        .expect("failed to create surface");
+    let texture = tc.create_texture_from_surface(&surface)
+        .expect("failed to upload texture to GPU");
+    // SAFETY: texture_creator outlives the texture (see Renderer field declaration order).
+    unsafe { std::mem::transmute(texture) }
 }
 
 /// Decode the car PNG, strip the solid background via flood-fill, and upload as an SDL2 texture.

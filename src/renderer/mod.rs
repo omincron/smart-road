@@ -1,10 +1,11 @@
-use sdl2::pixels::Color;
+use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
-use sdl2::render::{Canvas, TextureCreator};
+use sdl2::render::{BlendMode, Canvas, Texture, TextureCreator};
+use sdl2::surface::Surface;
 use sdl2::video::{Window, WindowContext};
 
 use crate::statistics::StatsAccumulator;
-use crate::vehicle::{Direction, Vehicle};
+use crate::vehicle::Vehicle;
 
 pub const WINDOW_W: u32 = 800;
 pub const WINDOW_H: u32 = 800;
@@ -20,21 +21,24 @@ const C_ROAD: Color = Color { r: 50, g: 50, b: 50, a: 255 };  // asphalt
 const C_MARK: Color = Color { r: 160, g: 160, b: 160, a: 255 }; // lane dashes / dividers
 const C_STOP: Color = Color { r: 255, g: 255, b: 255, a: 255 }; // stop lines
 
-// vehicle colours by travel direction
-const C_NORTH: Color = Color { r: 220, g: 60, b: 60, a: 255 };  // heading north (red)
-const C_SOUTH: Color = Color { r: 60, g: 120, b: 220, a: 255 }; // heading south (blue)
-const C_EAST: Color = Color { r: 60, g: 180, b: 60, a: 255 };   // heading east  (green)
-const C_WEST: Color = Color { r: 220, g: 200, b: 50, a: 255 };  // heading west  (yellow)
+
+// Rendered size of a vehicle sprite (portrait — car faces North by default).
+const CAR_W: u32 = 24;
+const CAR_H: u32 = 34;
 
 pub struct Renderer {
     pub canvas: Canvas<Window>,
     texture_creator: TextureCreator<WindowContext>,
+    // SAFETY: car_texture is declared after texture_creator so it is dropped first,
+    // satisfying SDL2's requirement that textures are destroyed before their creator.
+    car_texture: Texture<'static>,
 }
 
 impl Renderer {
     pub fn new(canvas: Canvas<Window>) -> Self {
         let texture_creator = canvas.texture_creator();
-        Renderer { canvas, texture_creator }
+        let car_texture = load_car_texture(&texture_creator);
+        Renderer { canvas, texture_creator, car_texture }
     }
 
     fn draw_text(&mut self, font: &sdl2::ttf::Font, text: &str, x: i32, y: i32, color: Color) {
@@ -179,17 +183,14 @@ impl Renderer {
     }
 
     fn draw_vehicle(&mut self, v: &Vehicle) {
-        let color = match v.original_direction {
-            Direction::North => C_NORTH,
-            Direction::South => C_SOUTH,
-            Direction::East => C_EAST,
-            Direction::West => C_WEST,
-        };
-        const SZ: i32 = 28;
-        self.canvas.set_draw_color(color);
-        self.canvas
-            .fill_rect(Rect::new(v.x as i32 - SZ / 2, v.y as i32 - SZ / 2, SZ as u32, SZ as u32))
-            .unwrap();
+        let dest = Rect::new(
+            v.x as i32 - CAR_W as i32 / 2,
+            v.y as i32 - CAR_H as i32 / 2,
+            CAR_W, CAR_H,
+        );
+        // Sprite already faces North (0°), so angle_deg maps directly to copy_ex.
+        let angle = v.angle_deg as f64;
+        self.canvas.copy_ex(&self.car_texture, None, Some(dest), angle, None, false, false).unwrap();
     }
 
     /// Overlay shown when the simulation ends — renders the stats panel with text.
@@ -238,5 +239,77 @@ impl Renderer {
 
     pub fn present(&mut self) {
         self.canvas.present();
+    }
+}
+
+/// Decode the car PNG, strip the solid background via flood-fill, and upload as an SDL2 texture.
+/// Returns a Texture with a transmuted 'static lifetime — safe because the caller
+/// stores it after the TextureCreator in the same struct (dropped first).
+fn load_car_texture(tc: &TextureCreator<WindowContext>) -> Texture<'static> {
+    let mut img = image::open("assets/car.png")
+        .expect("failed to open car sprite")
+        .into_rgba8();
+
+    strip_background(&mut img);
+
+    let (w, h) = img.dimensions();
+    let mut pixels = img.into_raw();
+
+    // RGBA32 is the endian-aware alias: ABGR8888 on little-endian, RGBA8888 on big-endian.
+    // The `image` crate gives RGBA bytes in memory order, which matches RGBA32.
+    let surface = Surface::from_data(&mut pixels, w, h, w * 4, PixelFormatEnum::RGBA32)
+        .expect("failed to create surface from car pixels");
+
+    let mut texture = tc.create_texture_from_surface(&surface)
+        .expect("failed to upload car texture to GPU");
+    texture.set_blend_mode(BlendMode::Blend);
+
+    // SAFETY: texture_creator outlives car_texture (see Renderer field declaration order).
+    unsafe { std::mem::transmute(texture) }
+}
+
+/// BFS flood-fill from all four corners, making every connected near-background pixel
+/// fully transparent. This removes the solid white/grey canvas without touching the car body.
+fn strip_background(img: &mut image::RgbaImage) {
+    let (w, h) = img.dimensions();
+    let bg = {
+        let p = img.get_pixel(0, 0);
+        [p[0], p[1], p[2]]
+    };
+    const TOL: i32 = 35;
+
+    let matches = |p: &image::Rgba<u8>| -> bool {
+        (0..3).all(|i| (p[i] as i32 - bg[i] as i32).abs() <= TOL)
+    };
+
+    let mut visited = vec![false; (w * h) as usize];
+    let mut queue = std::collections::VecDeque::new();
+
+    for &(cx, cy) in &[(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
+        let idx = (cy * w + cx) as usize;
+        if !visited[idx] {
+            visited[idx] = true;
+            queue.push_back((cx, cy));
+        }
+    }
+
+    while let Some((x, y)) = queue.pop_front() {
+        if !matches(img.get_pixel(x, y)) {
+            continue;
+        }
+        img.put_pixel(x, y, image::Rgba([0, 0, 0, 0]));
+
+        for (nx, ny) in [
+            (x.wrapping_sub(1), y), (x + 1, y),
+            (x, y.wrapping_sub(1)), (x, y + 1),
+        ] {
+            if nx < w && ny < h {
+                let nidx = (ny * w + nx) as usize;
+                if !visited[nidx] {
+                    visited[nidx] = true;
+                    queue.push_back((nx, ny));
+                }
+            }
+        }
     }
 }

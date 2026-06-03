@@ -14,7 +14,7 @@ use input::InputHandler;
 use intersection::IntersectionManager;
 use renderer::Renderer;
 use statistics::StatsAccumulator;
-use vehicle::{Direction, VehicleState, direction_to_angle};
+use vehicle::{Direction, Speed, VehicleState, direction_to_angle};
 use vehicle::physics::{SAFETY_DISTANCE, VEHICLE_LENGTH};
 
 /// Returns true if another vehicle in the same lane is closer than the safe
@@ -55,6 +55,53 @@ fn is_blocked_ahead(
         };
         axial < min_gap
     })
+}
+
+/// Desired speed for an approaching vehicle based on distance to the stop line
+/// and gap to the nearest leader in the same lane.
+/// Fast > 200 px out, Normal 80–200 px, Slow < 80 px.
+fn approach_speed(
+    id: u32,
+    dir: Direction,
+    x: f32,
+    y: f32,
+    snapshot: &[(u32, Direction, f32, f32, VehicleState)],
+) -> Speed {
+    let dist_stop = intersection::dist_to_stop_line(dir, x, y);
+
+    let min_leader_gap = snapshot
+        .iter()
+        .filter(|&&(oid, odir, ox, oy, ostate)| {
+            if oid == id || odir != dir { return false; }
+            if matches!(ostate, VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done) {
+                return false;
+            }
+            let ahead = match dir {
+                Direction::North => oy < y,
+                Direction::South => oy > y,
+                Direction::East  => ox > x,
+                Direction::West  => ox < x,
+            };
+            let transverse = match dir {
+                Direction::North | Direction::South => (ox - x).abs(),
+                Direction::East  | Direction::West  => (oy - y).abs(),
+            };
+            ahead && transverse <= 20.0
+        })
+        .map(|&(_, _, ox, oy, _)| match dir {
+            Direction::North | Direction::South => (oy - y).abs(),
+            Direction::East  | Direction::West  => (ox - x).abs(),
+        })
+        .fold(f32::MAX, f32::min);
+
+    let constraint = dist_stop.min(min_leader_gap);
+    if constraint > 200.0 {
+        Speed::Fast
+    } else if constraint > 80.0 {
+        Speed::Normal
+    } else {
+        Speed::Slow
+    }
 }
 
 #[derive(PartialEq)]
@@ -148,8 +195,11 @@ fn main() {
                             } else {
                                 v.state = VehicleState::Waiting;
                             }
-                        } else if !is_blocked_ahead(v.id, v.direction, v.x, v.y, &snapshot) {
-                            v.advance();
+                        } else {
+                            v.speed = approach_speed(v.id, v.direction, v.x, v.y, &snapshot);
+                            if !is_blocked_ahead(v.id, v.direction, v.x, v.y, &snapshot) {
+                                v.advance();
+                            }
                         }
                     }
                     VehicleState::Waiting => {
@@ -162,6 +212,7 @@ fn main() {
                         }
                     }
                     VehicleState::Crossing => {
+                        v.speed = Speed::Normal;
                         if v.advance_crossing() {
                             let exit_dir = intersection::exit_direction(v.direction, v.route);
                             v.direction = exit_dir;
@@ -175,7 +226,13 @@ fn main() {
                         }
                     }
                     VehicleState::Exiting => {
+                        v.speed = Speed::Fast;
                         v.advance();
+                        let w = renderer::WINDOW_W as f32;
+                        let h = renderer::WINDOW_H as f32;
+                        if v.x < -80.0 || v.x > w + 80.0 || v.y < -80.0 || v.y > h + 80.0 {
+                            v.state = VehicleState::Done;
+                        }
                     }
                     VehicleState::Done => {}
                 }
@@ -186,24 +243,30 @@ fn main() {
             }
 
             // ── close-call detection ──────────────────────────────────────────
+            // First pass: read-only — collect gaps and violation pairs.
             let mut violations: HashSet<(u32, u32)> = HashSet::new();
+            let mut gap_updates: Vec<(usize, f32)> = Vec::new();
             for i in 0..vehicles.len() {
                 for j in (i + 1)..vehicles.len() {
                     let (a, b) = (&vehicles[i], &vehicles[j]);
+                    let gap = vehicle::physics::distance(a.x, a.y, b.x, b.y);
+                    gap_updates.push((i, gap));
+                    gap_updates.push((j, gap));
+                    stats.record_gap(gap);
                     if vehicle::physics::is_close_call(a.x, a.y, b.x, b.y) {
-                        let pair = (a.id.min(b.id), a.id.max(b.id));
-                        violations.insert(pair);
+                        violations.insert((a.id.min(b.id), a.id.max(b.id)));
                     }
+                }
+            }
+            // Second pass: write min_gap_seen per vehicle.
+            for (idx, gap) in gap_updates {
+                if gap < vehicles[idx].min_gap_seen {
+                    vehicles[idx].min_gap_seen = gap;
                 }
             }
             stats.update_violations(violations);
 
-            // Drop vehicles that have left the screen
-            vehicles.retain(|v| {
-                let w = renderer::WINDOW_W as f32;
-                let h = renderer::WINDOW_H as f32;
-                v.x > -80.0 && v.x < w + 80.0 && v.y > -80.0 && v.y < h + 80.0
-            });
+            vehicles.retain(|v| v.state != VehicleState::Done);
 
             tick += 1;
         }

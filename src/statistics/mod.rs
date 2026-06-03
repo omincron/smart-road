@@ -7,7 +7,8 @@ pub struct StatsAccumulator {
     max_transit: Option<u64>,
     min_transit: Option<u64>,
     pub close_calls: u32,
-    active_violations: HashSet<(u32, u32)>, // pairs currently inside safety distance
+    pub min_gap_px: f32,
+    active_violations: HashSet<(u32, u32)>,
 }
 
 impl StatsAccumulator {
@@ -19,7 +20,14 @@ impl StatsAccumulator {
             max_transit: None,
             min_transit: None,
             close_calls: 0,
+            min_gap_px: f32::MAX,
             active_violations: HashSet::new(),
+        }
+    }
+
+    pub fn record_gap(&mut self, gap: f32) {
+        if gap < self.min_gap_px {
+            self.min_gap_px = gap;
         }
     }
 
@@ -66,6 +74,9 @@ impl StatsAccumulator {
             _ => v.push("  Transit time    : N/A".to_string()),
         }
         v.push(format!("  Close calls     : {}", self.close_calls));
+        if self.min_gap_px < f32::MAX {
+            v.push(format!("  Min gap seen    : {:.1} px", self.min_gap_px));
+        }
         v.push(String::new());
         v.push("  Press ESC to quit".to_string());
         v

@@ -122,6 +122,19 @@ pub fn exit_direction(direction: Direction, route: Route) -> Direction {
 }
 
 // ── Stop-line detection ───────────────────────────────────────────────────────
+/// Remaining distance (px) to the stop line. Always positive while approaching.
+pub fn dist_to_stop_line(direction: Direction, x: f32, y: f32) -> f32 {
+    let cx = CENTER_X as f32;
+    let cy = CENTER_Y as f32;
+    let rw = ROAD_W as f32;
+    match direction {
+        Direction::North => y - (cy + rw),
+        Direction::South => (cy - rw) - y,
+        Direction::West  => x - (cx + rw),
+        Direction::East  => (cx - rw) - x,
+    }
+}
+
 /// True once an approaching vehicle's front has reached its stop line.
 pub fn at_stop_line(direction: Direction, x: f32, y: f32) -> bool {
     let cx = CENTER_X as f32;

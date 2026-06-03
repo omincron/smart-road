@@ -47,29 +47,27 @@ impl StatsAccumulator {
         self.active_violations = current;
     }
 
-    pub fn print_to_terminal(&self) {
-        println!();
-        println!("╔══════════════════════════════╗");
-        println!("║     Simulation Statistics    ║");
-        println!("╠══════════════════════════════╣");
-        println!("║ Vehicles passed : {:>10} ║", self.vehicles_passed);
+    /// Returns stat lines ready to render on screen.
+    pub fn stat_lines(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        v.push("  Simulation Statistics".to_string());
+        v.push(String::new());
+        v.push(format!("  Vehicles passed : {}", self.vehicles_passed));
         if self.max_velocity > f32::MIN {
-            println!("║ Max velocity    : {:>8.1} px ║", self.max_velocity);
-        }
-        if self.min_velocity < f32::MAX {
-            println!("║ Min velocity    : {:>8.1} px ║", self.min_velocity);
+            v.push(format!("  Max velocity    : {:.1} px/tick", self.max_velocity));
+            v.push(format!("  Min velocity    : {:.1} px/tick",
+                if self.min_velocity < f32::MAX { self.min_velocity } else { 0.0 }));
         }
         match (self.max_transit, self.min_transit) {
             (Some(max), Some(min)) => {
-                println!("║ Max transit     : {:>7} tks ║", max);
-                println!("║ Min transit     : {:>7} tks ║", min);
+                v.push(format!("  Max transit     : {} ticks", max));
+                v.push(format!("  Min transit     : {} ticks", min));
             }
-            _ => {
-                println!("║ Transit time    :       N/A  ║");
-            }
+            _ => v.push("  Transit time    : N/A".to_string()),
         }
-        println!("║ Close calls     : {:>10} ║", self.close_calls);
-        println!("╚══════════════════════════════╝");
-        println!();
+        v.push(format!("  Close calls     : {}", self.close_calls));
+        v.push(String::new());
+        v.push("  Press ESC to quit".to_string());
+        v
     }
 }

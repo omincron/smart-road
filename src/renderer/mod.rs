@@ -1,8 +1,9 @@
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use sdl2::render::{Canvas, TextureCreator};
+use sdl2::video::{Window, WindowContext};
 
+use crate::statistics::StatsAccumulator;
 use crate::vehicle::{Direction, Vehicle};
 
 pub const WINDOW_W: u32 = 800;
@@ -27,11 +28,21 @@ const C_WEST: Color = Color { r: 220, g: 200, b: 50, a: 255 };  // heading west 
 
 pub struct Renderer {
     pub canvas: Canvas<Window>,
+    texture_creator: TextureCreator<WindowContext>,
 }
 
 impl Renderer {
     pub fn new(canvas: Canvas<Window>) -> Self {
-        Renderer { canvas }
+        let texture_creator = canvas.texture_creator();
+        Renderer { canvas, texture_creator }
+    }
+
+    fn draw_text(&mut self, font: &sdl2::ttf::Font, text: &str, x: i32, y: i32, color: Color) {
+        if text.is_empty() { return; }
+        let Ok(surface) = font.render(text).blended(color) else { return };
+        let Ok(texture) = self.texture_creator.create_texture_from_surface(&surface) else { return };
+        let q = texture.query();
+        let _ = self.canvas.copy(&texture, None, Some(Rect::new(x, y, q.width, q.height)));
     }
 
     pub fn clear(&mut self) {
@@ -181,52 +192,48 @@ impl Renderer {
             .unwrap();
     }
 
-    /// Dark semi-transparent overlay shown when the simulation ends.
-    pub fn draw_stats_overlay(&mut self) {
+    /// Overlay shown when the simulation ends — renders the stats panel with text.
+    pub fn draw_stats_overlay(&mut self, font: &sdl2::ttf::Font, stats: &StatsAccumulator) {
+        const LINE_H: i32 = 28;
+        const PAD: i32 = 20;
+
+        let lines = stats.stat_lines();
+        let pw: i32 = 380;
+        let ph: i32 = PAD + lines.len() as i32 * LINE_H + PAD;
+        let px = (WINDOW_W as i32 - pw) / 2;
+        let py = (WINDOW_H as i32 - ph) / 2;
+
         self.canvas.set_blend_mode(sdl2::render::BlendMode::Blend);
 
-        // Dim the whole screen
-        self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 180));
+        // Dim background
+        self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 170));
         self.canvas.fill_rect(Rect::new(0, 0, WINDOW_W, WINDOW_H)).unwrap();
 
-        // Central info panel
-        let pw: u32 = 320;
-        let ph: u32 = 120;
-        let px = (WINDOW_W as i32 - pw as i32) / 2;
-        let py = (WINDOW_H as i32 - ph as i32) / 2;
+        // Panel background
+        self.canvas.set_draw_color(Color::RGBA(15, 15, 35, 235));
+        self.canvas.fill_rect(Rect::new(px, py, pw as u32, ph as u32)).unwrap();
 
-        self.canvas.set_draw_color(Color::RGBA(20, 20, 40, 230));
-        self.canvas.fill_rect(Rect::new(px, py, pw, ph)).unwrap();
-
-        // Border
-        self.canvas.set_draw_color(Color::RGB(180, 180, 220));
-        for t in 0..3 {
+        // Panel border
+        self.canvas.set_draw_color(Color::RGB(140, 160, 220));
+        for t in 0..2_i32 {
             self.canvas
-                .draw_rect(Rect::new(px - t, py - t, pw + 2 * t as u32, ph + 2 * t as u32))
-                .unwrap();
-        }
-
-        // Three coloured bars as a simple "stats ended" indicator
-        let bar_w: u32 = 60;
-        let bar_h: u32 = 20;
-        let gap: i32 = 20;
-        let total = (bar_w * 3) as i32 + gap * 2;
-        let bx = px + (pw as i32 - total) / 2;
-        let by = py + (ph as i32 - bar_h as i32) / 2;
-
-        let colours = [
-            Color::RGB(220, 80, 80),
-            Color::RGB(80, 180, 80),
-            Color::RGB(80, 120, 220),
-        ];
-        for (i, c) in colours.iter().enumerate() {
-            self.canvas.set_draw_color(*c);
-            self.canvas
-                .fill_rect(Rect::new(bx + i as i32 * (bar_w as i32 + gap), by, bar_w, bar_h))
+                .draw_rect(Rect::new(px - t, py - t, (pw + 2 * t) as u32, (ph + 2 * t) as u32))
                 .unwrap();
         }
 
         self.canvas.set_blend_mode(sdl2::render::BlendMode::None);
+
+        // Text lines
+        for (i, line) in lines.iter().enumerate() {
+            let color = if i == 0 {
+                Color::RGB(200, 220, 255) // title highlight
+            } else if i == lines.len() - 1 {
+                Color::RGB(140, 140, 160) // footer hint
+            } else {
+                Color::WHITE
+            };
+            self.draw_text(font, line, px, py + PAD + i as i32 * LINE_H, color);
+        }
     }
 
     pub fn present(&mut self) {

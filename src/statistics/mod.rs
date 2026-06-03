@@ -57,19 +57,20 @@ impl StatsAccumulator {
 
     /// Returns stat lines ready to render on screen.
     pub fn stat_lines(&self) -> Vec<String> {
+        const FPS: f32 = 60.0;
         let mut v = Vec::new();
         v.push("  Simulation Statistics".to_string());
         v.push(String::new());
         v.push(format!("  Vehicles passed : {}", self.vehicles_passed));
         if self.max_velocity > f32::MIN {
-            v.push(format!("  Max velocity    : {:.1} px/tick", self.max_velocity));
-            v.push(format!("  Min velocity    : {:.1} px/tick",
-                if self.min_velocity < f32::MAX { self.min_velocity } else { 0.0 }));
+            v.push(format!("  Max velocity    : {:.0} px/s", self.max_velocity * FPS));
+            v.push(format!("  Min velocity    : {:.0} px/s",
+                if self.min_velocity < f32::MAX { self.min_velocity * FPS } else { 0.0 }));
         }
         match (self.max_transit, self.min_transit) {
             (Some(max), Some(min)) => {
-                v.push(format!("  Max transit     : {} ticks", max));
-                v.push(format!("  Min transit     : {} ticks", min));
+                v.push(format!("  Max transit     : {:.2} s", max as f32 / FPS));
+                v.push(format!("  Min transit     : {:.2} s", min as f32 / FPS));
             }
             _ => v.push("  Transit time    : N/A".to_string()),
         }

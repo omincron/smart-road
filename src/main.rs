@@ -186,9 +186,14 @@ fn main() {
                 match v.state {
                     VehicleState::Approaching => {
                         if intersection::at_stop_line(v.direction, v.x, v.y) {
+                            // First contact with stop line = detection by the algorithm.
+                            // detection_tick == 0 means not yet detected (vehicles need
+                            // at least ~60 ticks to reach the stop line from spawn).
+                            if v.detection_tick == 0 {
+                                v.detection_tick = tick;
+                            }
                             if manager.try_reserve(v.id, v.direction, v.route) {
                                 v.state = VehicleState::Crossing;
-                                v.detection_tick = tick;
                                 v.crossing_path =
                                     intersection::crossing_waypoints(v.direction, v.route);
                                 v.waypoint_idx = 0;
@@ -205,7 +210,7 @@ fn main() {
                     VehicleState::Waiting => {
                         if manager.try_reserve(v.id, v.direction, v.route) {
                             v.state = VehicleState::Crossing;
-                            v.detection_tick = tick;
+                            // detection_tick already set when vehicle first hit the stop line
                             v.crossing_path =
                                 intersection::crossing_waypoints(v.direction, v.route);
                             v.waypoint_idx = 0;
@@ -218,11 +223,8 @@ fn main() {
                             v.direction = exit_dir;
                             v.angle_deg = direction_to_angle(exit_dir);
                             v.state = VehicleState::Exiting;
-                            v.exit_tick = Some(tick);
                             manager.release(v.id);
-                            if let Some(transit) = v.transit_ticks() {
-                                exits.push((transit, v.speed.pixels_per_tick()));
-                            }
+                            // exit_tick recorded when vehicle leaves the canvas, not here
                         }
                     }
                     VehicleState::Exiting => {
@@ -232,6 +234,10 @@ fn main() {
                         let h = renderer::WINDOW_H as f32;
                         if v.x < -80.0 || v.x > w + 80.0 || v.y < -80.0 || v.y > h + 80.0 {
                             v.state = VehicleState::Done;
+                            v.exit_tick = Some(tick);
+                            if let Some(transit) = v.transit_ticks() {
+                                exits.push((transit, v.speed.pixels_per_tick()));
+                            }
                         }
                     }
                     VehicleState::Done => {}

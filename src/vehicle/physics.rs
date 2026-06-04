@@ -9,7 +9,7 @@ pub fn distance(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
     (dx * dx + dy * dy).sqrt()
 }
 
-/// Returns true when two vehicles violate the minimum following gap (centre-to-centre).
+/// Returns true when two vehicles are physically nearly touching (centres < SAFETY_DISTANCE).
 pub fn is_close_call(x1: f32, y1: f32, x2: f32, y2: f32) -> bool {
-    distance(x1, y1, x2, y2) < MIN_FOLLOWING_GAP
+    distance(x1, y1, x2, y2) < SAFETY_DISTANCE
 }

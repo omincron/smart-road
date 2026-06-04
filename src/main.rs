@@ -58,6 +58,27 @@ fn max_follow_speed(gap: f32) -> f32 {
     (clearance * SMOOTH_ALPHA).clamp(0.0, Speed::FAST_PX)
 }
 
+/// True if two Approaching/Waiting vehicles in the same lane are inside the safe following gap.
+fn is_following_violation(a: &vehicle::Vehicle, b: &vehicle::Vehicle) -> bool {
+    if a.direction != b.direction { return false; }
+    if matches!(a.state, VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done) {
+        return false;
+    }
+    if matches!(b.state, VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done) {
+        return false;
+    }
+    let transverse = match a.direction {
+        Direction::North | Direction::South => (a.x - b.x).abs(),
+        Direction::East  | Direction::West  => (a.y - b.y).abs(),
+    };
+    if transverse > 20.0 { return false; }
+    let axial = match a.direction {
+        Direction::North | Direction::South => (a.y - b.y).abs(),
+        Direction::East  | Direction::West  => (a.x - b.x).abs(),
+    };
+    axial < MIN_FOLLOWING_GAP
+}
+
 /// True if the nearest leader in the same lane is within the minimum following gap.
 fn is_blocked_ahead(
     id: u32,
@@ -276,7 +297,9 @@ fn main() {
                     let (a, b) = (&vehicles[i], &vehicles[j]);
                     let gap = vehicle::physics::distance(a.x, a.y, b.x, b.y);
                     stats.record_gap(gap);
-                    if vehicle::physics::is_close_call(a.x, a.y, b.x, b.y) {
+                    if vehicle::physics::is_close_call(a.x, a.y, b.x, b.y)
+                        || is_following_violation(a, b)
+                    {
                         violations.insert((a.id.min(b.id), a.id.max(b.id)));
                     }
                 }

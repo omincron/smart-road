@@ -17,6 +17,49 @@ use statistics::StatsAccumulator;
 use vehicle::{Direction, Speed, VehicleState, direction_to_angle};
 use vehicle::physics::{SAFETY_DISTANCE, VEHICLE_LENGTH};
 
+/// Center-to-center axial gap to the nearest vehicle ahead in the same approach lane.
+/// Returns f32::MAX when no leader exists.
+fn leader_gap(
+    id: u32,
+    dir: Direction,
+    x: f32,
+    y: f32,
+    snapshot: &[(u32, Direction, f32, f32, VehicleState)],
+) -> f32 {
+    snapshot.iter()
+        .filter(|&&(oid, odir, ox, oy, ostate)| {
+            if oid == id || odir != dir { return false; }
+            if matches!(ostate, VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done) {
+                return false;
+            }
+            let ahead = match dir {
+                Direction::North => oy < y,
+                Direction::South => oy > y,
+                Direction::East  => ox > x,
+                Direction::West  => ox < x,
+            };
+            let transverse = match dir {
+                Direction::North | Direction::South => (ox - x).abs(),
+                Direction::East  | Direction::West  => (oy - y).abs(),
+            };
+            ahead && transverse <= 20.0
+        })
+        .map(|&(_, _, ox, oy, _)| match dir {
+            Direction::North | Direction::South => (oy - y).abs(),
+            Direction::East  | Direction::West  => (ox - x).abs(),
+        })
+        .fold(f32::MAX, f32::min)
+}
+
+/// Maximum safe speed given a center-to-center gap to the leader.
+/// Derived from the smooth_speed stopping distance (v_max = alpha × clearance),
+/// guaranteeing the vehicle asymptotically reaches min_gap without overshooting.
+fn max_follow_speed(gap: f32) -> f32 {
+    const ALPHA: f32 = 0.12; // must match Vehicle::smooth_speed alpha
+    let clearance = gap - (SAFETY_DISTANCE + VEHICLE_LENGTH);
+    (clearance * ALPHA).clamp(0.0, Speed::FAST_PX)
+}
+
 /// Returns true if another vehicle in the same lane is closer than the safe
 /// following distance ahead of (id, dir, x, y).
 fn is_blocked_ahead(
@@ -57,16 +100,16 @@ fn is_blocked_ahead(
     })
 }
 
-/// Desired speed for an approaching vehicle based on distance to the stop line
+/// Target speed for an approaching vehicle based on distance to the stop line
 /// and gap to the nearest leader in the same lane.
 /// Fast > 200 px out, Normal 80–200 px, Slow < 80 px.
-fn approach_speed(
+fn approach_target_speed(
     id: u32,
     dir: Direction,
     x: f32,
     y: f32,
     snapshot: &[(u32, Direction, f32, f32, VehicleState)],
-) -> Speed {
+) -> f32 {
     let dist_stop = intersection::dist_to_stop_line(dir, x, y);
 
     let min_leader_gap = snapshot
@@ -96,11 +139,11 @@ fn approach_speed(
 
     let constraint = dist_stop.min(min_leader_gap);
     if constraint > 200.0 {
-        Speed::Fast
+        Speed::FAST_PX
     } else if constraint > 80.0 {
-        Speed::Normal
+        Speed::NORMAL_PX
     } else {
-        Speed::Slow
+        Speed::SLOW_PX
     }
 }
 
@@ -180,55 +223,89 @@ fn main() {
                 .map(|v| (v.id, v.direction, v.x, v.y, v.state))
                 .collect();
 
+            manager.cleanup_expired(tick);
+
             for v in vehicles.iter_mut() {
-                stats.record_speed(v.speed.pixels_per_tick());
+                stats.record_speed(v.current_speed);
 
                 match v.state {
                     VehicleState::Approaching => {
                         if intersection::at_stop_line(v.direction, v.x, v.y) {
-                            // First contact with stop line = detection by the algorithm.
-                            // detection_tick == 0 means not yet detected (vehicles need
-                            // at least ~60 ticks to reach the stop line from spawn).
                             if v.detection_tick == 0 {
                                 v.detection_tick = tick;
                             }
-                            if manager.try_reserve(v.id, v.direction, v.route) {
-                                v.state = VehicleState::Crossing;
-                                v.crossing_path =
-                                    intersection::crossing_waypoints(v.direction, v.route);
-                                v.waypoint_idx = 0;
+                            if let Some(entry_tick) = v.reservation {
+                                if tick >= entry_tick {
+                                    v.state = VehicleState::Crossing;
+                                    v.crossing_path =
+                                        intersection::crossing_waypoints(v.direction, v.route);
+                                    v.waypoint_idx = 0;
+                                }
+                                // else: hold at stop line until entry_tick arrives
                             } else {
                                 v.state = VehicleState::Waiting;
                             }
                         } else {
-                            v.speed = approach_speed(v.id, v.direction, v.x, v.y, &snapshot);
+                            // 1. Compute desired target speed from AIM or leader-following.
+                            let dist = intersection::dist_to_stop_line(v.direction, v.x, v.y);
+                            if dist <= intersection::RESERVATION_DIST {
+                                match manager.try_reserve_timed(
+                                    v.id, v.direction, v.route, tick, dist,
+                                ) {
+                                    Some((entry, spd)) => {
+                                        v.reservation = Some(entry);
+                                        v.target_speed = spd;
+                                    }
+                                    None => {
+                                        v.reservation = None;
+                                        v.target_speed = Speed::SLOW_PX;
+                                    }
+                                }
+                            } else {
+                                v.target_speed = approach_target_speed(
+                                    v.id, v.direction, v.x, v.y, &snapshot,
+                                );
+                            }
+
+                            // 2. Cap by safe following speed — overrides AIM when a leader
+                            //    is close. Caps current_speed too so smooth_speed can't
+                            //    carry excess momentum into this tick's advance().
+                            let gap = leader_gap(v.id, v.direction, v.x, v.y, &snapshot);
+                            let follow_cap = max_follow_speed(gap);
+                            v.target_speed = v.target_speed.min(follow_cap);
+                            v.current_speed = v.current_speed.min(follow_cap);
+
+                            // 3. Interpolate toward target, then advance.
+                            v.smooth_speed();
                             if !is_blocked_ahead(v.id, v.direction, v.x, v.y, &snapshot) {
                                 v.advance();
                             }
                         }
                     }
                     VehicleState::Waiting => {
-                        if manager.try_reserve(v.id, v.direction, v.route) {
+                        if manager.try_reserve(v.id, v.direction, v.route, tick) {
                             v.state = VehicleState::Crossing;
-                            // detection_tick already set when vehicle first hit the stop line
                             v.crossing_path =
                                 intersection::crossing_waypoints(v.direction, v.route);
                             v.waypoint_idx = 0;
+                            v.target_speed = Speed::NORMAL_PX;
                         }
                     }
                     VehicleState::Crossing => {
-                        v.speed = Speed::Normal;
+                        v.target_speed = Speed::NORMAL_PX;
+                        v.smooth_speed();
                         if v.advance_crossing() {
                             let exit_dir = intersection::exit_direction(v.direction, v.route);
                             v.direction = exit_dir;
                             v.angle_deg = direction_to_angle(exit_dir);
                             v.state = VehicleState::Exiting;
+                            v.reservation = None;
                             manager.release(v.id);
-                            // exit_tick recorded when vehicle leaves the canvas, not here
                         }
                     }
                     VehicleState::Exiting => {
-                        v.speed = Speed::Fast;
+                        v.target_speed = Speed::FAST_PX;
+                        v.smooth_speed();
                         v.advance();
                         let w = renderer::WINDOW_W as f32;
                         let h = renderer::WINDOW_H as f32;
@@ -236,7 +313,7 @@ fn main() {
                             v.state = VehicleState::Done;
                             v.exit_tick = Some(tick);
                             if let Some(transit) = v.transit_ticks() {
-                                exits.push((transit, v.speed.pixels_per_tick()));
+                                exits.push((transit, v.current_speed));
                             }
                         }
                     }

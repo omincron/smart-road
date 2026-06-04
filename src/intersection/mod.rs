@@ -1,5 +1,5 @@
 use crate::renderer::{CENTER_X, CENTER_Y, ROAD_W};
-use crate::vehicle::{Direction, Route};
+use crate::vehicle::{Direction, Route, Speed};
 
 // ── Path index encoding ───────────────────────────────────────────────────────
 // path_index = direction_index * 3 + route_index
@@ -102,6 +102,18 @@ pub fn crossing_waypoints(direction: Direction, route: Route) -> Vec<(f32, f32)>
     }
 }
 
+/// Total geometric path length through the intersection for a given (direction, route).
+pub fn crossing_path_length(direction: Direction, route: Route) -> f32 {
+    let pts = crossing_waypoints(direction, route);
+    pts.windows(2)
+        .map(|w| {
+            let dx = w[1].0 - w[0].0;
+            let dy = w[1].1 - w[0].1;
+            (dx * dx + dy * dy).sqrt()
+        })
+        .sum()
+}
+
 /// Direction the vehicle is heading after it exits the intersection.
 pub fn exit_direction(direction: Direction, route: Route) -> Direction {
     match route {
@@ -148,33 +160,130 @@ pub fn at_stop_line(direction: Direction, x: f32, y: f32) -> bool {
     }
 }
 
-// ── Reservation manager ───────────────────────────────────────────────────────
+// ── Time-slot reservation manager ────────────────────────────────────────────
+/// Distance from the stop line at which vehicles begin requesting reservations.
+pub const RESERVATION_DIST: f32 = 300.0;
+
+/// Vehicles cross at Normal speed; used to estimate crossing window duration.
+const CROSSING_SPEED: f32 = Speed::NORMAL_PX;
+
+/// Extra ticks added to crossing window to absorb speed-smoothing imprecision.
+const GRACE_TICKS: u64 = 10;
+
+struct TimedReservation {
+    vehicle_id: u32,
+    path_idx: usize,
+    entry_tick: u64,
+    exit_tick: u64,
+}
+
 pub struct IntersectionManager {
-    active: Vec<(u32, usize)>, // (vehicle_id, path_index)
+    reservations: Vec<TimedReservation>,
 }
 
 impl IntersectionManager {
     pub fn new() -> Self {
-        IntersectionManager { active: Vec::new() }
+        IntersectionManager { reservations: Vec::new() }
     }
 
-    /// Try to grant a crossing reservation. Returns true if granted.
-    pub fn try_reserve(&mut self, vehicle_id: u32, direction: Direction, route: Route) -> bool {
-        // Already reserved (e.g. called twice for the same vehicle)
-        if self.active.iter().any(|(id, _)| *id == vehicle_id) {
+    /// Purge reservations whose crossing window has fully elapsed.
+    /// Call once per simulation tick before processing vehicles.
+    pub fn cleanup_expired(&mut self, current_tick: u64) {
+        self.reservations.retain(|r| r.exit_tick > current_tick);
+    }
+
+    /// Find the earliest free crossing window reachable from `dist_to_stop` px away.
+    ///
+    /// If the vehicle already holds a reservation, returns its (entry_tick, approach_speed).
+    /// Otherwise searches forward in time and books the first conflict-free slot.
+    /// Returns None only when the intersection is saturated for the full look-ahead range.
+    pub fn try_reserve_timed(
+        &mut self,
+        vehicle_id: u32,
+        direction: Direction,
+        route: Route,
+        current_tick: u64,
+        dist_to_stop: f32,
+    ) -> Option<(u64, f32)> {
+        // If already reserved, recalculate the approach speed needed to arrive on time.
+        // If the entry window has passed (vehicle was blocked by a leader), re-book.
+        if let Some(pos) = self.reservations.iter().position(|r| r.vehicle_id == vehicle_id) {
+            let entry = self.reservations[pos].entry_tick;
+            if entry + GRACE_TICKS >= current_tick {
+                let ticks_left = (entry as i64 - current_tick as i64).max(1) as f32;
+                let speed = (dist_to_stop / ticks_left).clamp(Speed::SLOW_PX, Speed::FAST_PX);
+                return Some((entry, speed));
+            }
+            // Entry window passed — drop and find a new slot below.
+            self.reservations.remove(pos);
+        }
+
+        let path_len = crossing_path_length(direction, route);
+        let crossing_ticks = (path_len / CROSSING_SPEED).ceil() as u64 + GRACE_TICKS;
+        let idx = path_index(direction, route);
+
+        // Search window: earliest arrival at full speed, latest at crawl speed + buffer.
+        let earliest = current_tick + (dist_to_stop / Speed::FAST_PX).ceil() as u64;
+        let search_max = current_tick + (dist_to_stop / Speed::SLOW_PX).floor() as u64 + 400;
+
+        for entry in earliest..=search_max {
+            let exit = entry + crossing_ticks;
+            let blocked = self.reservations.iter().any(|r| {
+                CONFLICTS[idx][r.path_idx] && entry < r.exit_tick && r.entry_tick < exit
+            });
+            if !blocked {
+                let ticks_until = (entry - current_tick).max(1) as f32;
+                let speed = (dist_to_stop / ticks_until).clamp(Speed::SLOW_PX, Speed::FAST_PX);
+                self.reservations.push(TimedReservation {
+                    vehicle_id,
+                    path_idx: idx,
+                    entry_tick: entry,
+                    exit_tick: exit,
+                });
+                return Some((entry, speed));
+            }
+        }
+        None
+    }
+
+    /// Fallback reservation for vehicles already at the stop line (Waiting state).
+    /// Grants an immediate slot if the full crossing window is free of conflicts
+    /// — including future reservations from approaching vehicles.
+    pub fn try_reserve(
+        &mut self,
+        vehicle_id: u32,
+        direction: Direction,
+        route: Route,
+        current_tick: u64,
+    ) -> bool {
+        if self.reservations.iter().any(|r| r.vehicle_id == vehicle_id) {
             return true;
         }
         let idx = path_index(direction, route);
-        let conflict = self.active.iter().any(|(_, active_idx)| CONFLICTS[idx][*active_idx]);
+        let path_len = crossing_path_length(direction, route);
+        let crossing_ticks = (path_len / CROSSING_SPEED).ceil() as u64 + GRACE_TICKS;
+        let exit_tick = current_tick + crossing_ticks;
+
+        // Full interval overlap: [current_tick, exit_tick) vs [r.entry_tick, r.exit_tick)
+        let conflict = self.reservations.iter().any(|r| {
+            CONFLICTS[idx][r.path_idx]
+                && current_tick < r.exit_tick
+                && r.entry_tick < exit_tick
+        });
         if conflict {
             return false;
         }
-        self.active.push((vehicle_id, idx));
+        self.reservations.push(TimedReservation {
+            vehicle_id,
+            path_idx: idx,
+            entry_tick: current_tick,
+            exit_tick,
+        });
         true
     }
 
     /// Release the reservation held by a vehicle that has finished crossing.
     pub fn release(&mut self, vehicle_id: u32) {
-        self.active.retain(|(id, _)| *id != vehicle_id);
+        self.reservations.retain(|r| r.vehicle_id != vehicle_id);
     }
 }

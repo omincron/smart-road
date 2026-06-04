@@ -15,25 +15,12 @@ pub enum Route {
     Left,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Speed {
-    Slow,
-    Normal,
-    Fast,
-}
+pub struct Speed;
 
 impl Speed {
     pub const SLOW_PX: f32 = 1.5;
     pub const NORMAL_PX: f32 = 3.0;
     pub const FAST_PX: f32 = 5.0;
-
-    pub fn pixels_per_tick(self) -> f32 {
-        match self {
-            Speed::Slow => Self::SLOW_PX,
-            Speed::Normal => Self::NORMAL_PX,
-            Speed::Fast => Self::FAST_PX,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +39,9 @@ pub struct Vehicle {
     pub y: f32,
     pub direction: Direction,
     pub route: Route,
-    pub speed: Speed,
+    pub current_speed: f32,
+    pub target_speed: f32,
+    pub reservation: Option<u64>, // entry_tick assigned by IntersectionManager
     pub state: VehicleState,
     pub angle_deg: f32, // clockwise degrees; 0 = pointing up (north)
 
@@ -75,7 +64,9 @@ impl Vehicle {
             y,
             direction,
             route,
-            speed: Speed::Normal,
+            current_speed: Speed::NORMAL_PX,
+            target_speed: Speed::NORMAL_PX,
+            reservation: None,
             state: VehicleState::Approaching,
             angle_deg: direction_to_angle(direction),
             crossing_path: Vec::new(),
@@ -91,9 +82,15 @@ impl Vehicle {
         self.exit_tick.map(|e| e - self.detection_tick)
     }
 
+    /// Exponential approach toward target_speed. Call once per tick before advance().
+    pub fn smooth_speed(&mut self) {
+        const ALPHA: f32 = 0.12;
+        self.current_speed += (self.target_speed - self.current_speed) * ALPHA;
+    }
+
     /// Straight-line advance along current direction (Approaching / Exiting).
     pub fn advance(&mut self) {
-        let d = self.speed.pixels_per_tick();
+        let d = self.current_speed;
         match self.direction {
             Direction::North => self.y -= d,
             Direction::South => self.y += d,
@@ -113,7 +110,7 @@ impl Vehicle {
         let dx = tx - self.x;
         let dy = ty - self.y;
         let dist = (dx * dx + dy * dy).sqrt();
-        let speed = self.speed.pixels_per_tick();
+        let speed = self.current_speed;
 
         if dist <= speed {
             self.x = tx;

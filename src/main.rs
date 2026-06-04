@@ -15,11 +15,11 @@ use intersection::IntersectionManager;
 use renderer::Renderer;
 use statistics::StatsAccumulator;
 use vehicle::{Direction, Speed, VehicleState, direction_to_angle};
-use vehicle::physics::{SAFETY_DISTANCE, VEHICLE_LENGTH};
+use vehicle::physics::{MIN_FOLLOWING_GAP, SMOOTH_ALPHA};
 
-/// Center-to-center axial gap to the nearest vehicle ahead in the same approach lane.
+/// Center-to-centre axial gap to the nearest vehicle ahead in the same approach lane.
 /// Returns f32::MAX when no leader exists.
-fn leader_gap(
+fn min_leader_gap_in_lane(
     id: u32,
     dir: Direction,
     x: f32,
@@ -51,17 +51,14 @@ fn leader_gap(
         .fold(f32::MAX, f32::min)
 }
 
-/// Maximum safe speed given a center-to-center gap to the leader.
-/// Derived from the smooth_speed stopping distance (v_max = alpha × clearance),
-/// guaranteeing the vehicle asymptotically reaches min_gap without overshooting.
+/// Maximum safe target speed given a centre-to-centre leader gap.
+/// v_max = SMOOTH_ALPHA × clearance ensures the vehicle cannot overshoot MIN_FOLLOWING_GAP.
 fn max_follow_speed(gap: f32) -> f32 {
-    const ALPHA: f32 = 0.12; // must match Vehicle::smooth_speed alpha
-    let clearance = gap - (SAFETY_DISTANCE + VEHICLE_LENGTH);
-    (clearance * ALPHA).clamp(0.0, Speed::FAST_PX)
+    let clearance = gap - MIN_FOLLOWING_GAP;
+    (clearance * SMOOTH_ALPHA).clamp(0.0, Speed::FAST_PX)
 }
 
-/// Returns true if another vehicle in the same lane is closer than the safe
-/// following distance ahead of (id, dir, x, y).
+/// True if the nearest leader in the same lane is within the minimum following gap.
 fn is_blocked_ahead(
     id: u32,
     dir: Direction,
@@ -69,40 +66,11 @@ fn is_blocked_ahead(
     y: f32,
     snapshot: &[(u32, Direction, f32, f32, VehicleState)],
 ) -> bool {
-    let min_gap = SAFETY_DISTANCE + VEHICLE_LENGTH;
-    snapshot.iter().any(|&(oid, odir, ox, oy, ostate)| {
-        if oid == id { return false; }
-        if odir != dir { return false; }
-        // Only consider vehicles still in the approach lane
-        if matches!(ostate, VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done) {
-            return false;
-        }
-        // Must be ahead in travel direction
-        let ahead = match dir {
-            Direction::North => oy < y,
-            Direction::South => oy > y,
-            Direction::East  => ox > x,
-            Direction::West  => ox < x,
-        };
-        if !ahead { return false; }
-        // Must be in the same lane (transverse distance < half a lane width)
-        let transverse = match dir {
-            Direction::North | Direction::South => (ox - x).abs(),
-            Direction::East  | Direction::West  => (oy - y).abs(),
-        };
-        if transverse > 20.0 { return false; }
-        // Gap (centre-to-centre along the lane) is too small
-        let axial = match dir {
-            Direction::North | Direction::South => (oy - y).abs(),
-            Direction::East  | Direction::West  => (ox - x).abs(),
-        };
-        axial < min_gap
-    })
+    min_leader_gap_in_lane(id, dir, x, y, snapshot) < MIN_FOLLOWING_GAP
 }
 
-/// Target speed for an approaching vehicle based on distance to the stop line
-/// and gap to the nearest leader in the same lane.
-/// Fast > 200 px out, Normal 80–200 px, Slow < 80 px.
+/// Target speed for an approaching vehicle outside the reservation zone.
+/// Fast > 200 px from stop line or leader, Normal 80–200 px, Slow < 80 px.
 fn approach_target_speed(
     id: u32,
     dir: Direction,
@@ -111,33 +79,8 @@ fn approach_target_speed(
     snapshot: &[(u32, Direction, f32, f32, VehicleState)],
 ) -> f32 {
     let dist_stop = intersection::dist_to_stop_line(dir, x, y);
-
-    let min_leader_gap = snapshot
-        .iter()
-        .filter(|&&(oid, odir, ox, oy, ostate)| {
-            if oid == id || odir != dir { return false; }
-            if matches!(ostate, VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done) {
-                return false;
-            }
-            let ahead = match dir {
-                Direction::North => oy < y,
-                Direction::South => oy > y,
-                Direction::East  => ox > x,
-                Direction::West  => ox < x,
-            };
-            let transverse = match dir {
-                Direction::North | Direction::South => (ox - x).abs(),
-                Direction::East  | Direction::West  => (oy - y).abs(),
-            };
-            ahead && transverse <= 20.0
-        })
-        .map(|&(_, _, ox, oy, _)| match dir {
-            Direction::North | Direction::South => (oy - y).abs(),
-            Direction::East  | Direction::West  => (ox - x).abs(),
-        })
-        .fold(f32::MAX, f32::min);
-
-    let constraint = dist_stop.min(min_leader_gap);
+    let gap = min_leader_gap_in_lane(id, dir, x, y, snapshot);
+    let constraint = dist_stop.min(gap);
     if constraint > 200.0 {
         Speed::FAST_PX
     } else if constraint > 80.0 {
@@ -215,7 +158,7 @@ fn main() {
             input.tick(&mut vehicles, &mut rng);
 
             // ── simulation update ─────────────────────────────────────────────
-            let mut exits: Vec<(u64, f32)> = Vec::new(); // (transit_ticks, speed)
+            let mut exits: Vec<u64> = Vec::new();
 
             // Snapshot used for same-lane following-distance checks.
             let snapshot: Vec<(u32, Direction, f32, f32, VehicleState)> = vehicles
@@ -231,8 +174,8 @@ fn main() {
                 match v.state {
                     VehicleState::Approaching => {
                         if intersection::at_stop_line(v.direction, v.x, v.y) {
-                            if v.detection_tick == 0 {
-                                v.detection_tick = tick;
+                            if v.detection_tick.is_none() {
+                                v.detection_tick = Some(tick);
                             }
                             if let Some(entry_tick) = v.reservation {
                                 if tick >= entry_tick {
@@ -270,8 +213,9 @@ fn main() {
                             // 2. Cap by safe following speed — overrides AIM when a leader
                             //    is close. Caps current_speed too so smooth_speed can't
                             //    carry excess momentum into this tick's advance().
-                            let gap = leader_gap(v.id, v.direction, v.x, v.y, &snapshot);
-                            let follow_cap = max_follow_speed(gap);
+                            let follow_cap = max_follow_speed(
+                                min_leader_gap_in_lane(v.id, v.direction, v.x, v.y, &snapshot),
+                            );
                             v.target_speed = v.target_speed.min(follow_cap);
                             v.current_speed = v.current_speed.min(follow_cap);
 
@@ -313,7 +257,7 @@ fn main() {
                             v.state = VehicleState::Done;
                             v.exit_tick = Some(tick);
                             if let Some(transit) = v.transit_ticks() {
-                                exits.push((transit, v.current_speed));
+                                exits.push(transit);
                             }
                         }
                     }
@@ -321,30 +265,20 @@ fn main() {
                 }
             }
 
-            for (transit, _speed) in exits {
+            for transit in exits {
                 stats.record_exit(transit);
             }
 
             // ── close-call detection ──────────────────────────────────────────
-            // First pass: read-only — collect gaps and violation pairs.
             let mut violations: HashSet<(u32, u32)> = HashSet::new();
-            let mut gap_updates: Vec<(usize, f32)> = Vec::new();
             for i in 0..vehicles.len() {
                 for j in (i + 1)..vehicles.len() {
                     let (a, b) = (&vehicles[i], &vehicles[j]);
                     let gap = vehicle::physics::distance(a.x, a.y, b.x, b.y);
-                    gap_updates.push((i, gap));
-                    gap_updates.push((j, gap));
                     stats.record_gap(gap);
                     if vehicle::physics::is_close_call(a.x, a.y, b.x, b.y) {
                         violations.insert((a.id.min(b.id), a.id.max(b.id)));
                     }
-                }
-            }
-            // Second pass: write min_gap_seen per vehicle.
-            for (idx, gap) in gap_updates {
-                if gap < vehicles[idx].min_gap_seen {
-                    vehicles[idx].min_gap_seen = gap;
                 }
             }
             stats.update_violations(violations);

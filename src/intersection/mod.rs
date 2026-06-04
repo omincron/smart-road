@@ -209,12 +209,12 @@ impl IntersectionManager {
         // If the entry window has passed (vehicle was blocked by a leader), re-book.
         if let Some(pos) = self.reservations.iter().position(|r| r.vehicle_id == vehicle_id) {
             let entry = self.reservations[pos].entry_tick;
-            if entry + GRACE_TICKS >= current_tick {
+            if current_tick <= entry + GRACE_TICKS && current_tick < self.reservations[pos].exit_tick {
                 let ticks_left = (entry as i64 - current_tick as i64).max(1) as f32;
                 let speed = (dist_to_stop / ticks_left).clamp(Speed::SLOW_PX, Speed::FAST_PX);
                 return Some((entry, speed));
             }
-            // Entry window passed — drop and find a new slot below.
+            // Entry window fully passed — drop and find a new slot below.
             self.reservations.remove(pos);
         }
 

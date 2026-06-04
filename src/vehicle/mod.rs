@@ -1,5 +1,7 @@
 pub mod physics;
 
+use physics::SMOOTH_ALPHA;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
     North, // travelling north, enters from south
@@ -50,10 +52,8 @@ pub struct Vehicle {
     pub waypoint_idx: usize,
 
     // stats — filled in as simulation progresses
-    pub detection_tick: u64,
+    pub detection_tick: Option<u64>, // None until vehicle first reaches the stop line
     pub exit_tick: Option<u64>,
-    pub distance_traveled: f32,
-    pub min_gap_seen: f32,
 }
 
 impl Vehicle {
@@ -71,21 +71,22 @@ impl Vehicle {
             angle_deg: direction_to_angle(direction),
             crossing_path: Vec::new(),
             waypoint_idx: 0,
-            detection_tick: 0,
+            detection_tick: None,
             exit_tick: None,
-            distance_traveled: 0.0,
-            min_gap_seen: f32::MAX,
         }
     }
 
+    /// Transit time in ticks from first stop-line detection to off-screen exit.
     pub fn transit_ticks(&self) -> Option<u64> {
-        self.exit_tick.map(|e| e - self.detection_tick)
+        match (self.detection_tick, self.exit_tick) {
+            (Some(d), Some(e)) => Some(e - d),
+            _ => None,
+        }
     }
 
     /// Exponential approach toward target_speed. Call once per tick before advance().
     pub fn smooth_speed(&mut self) {
-        const ALPHA: f32 = 0.12;
-        self.current_speed += (self.target_speed - self.current_speed) * ALPHA;
+        self.current_speed += (self.target_speed - self.current_speed) * SMOOTH_ALPHA;
     }
 
     /// Straight-line advance along current direction (Approaching / Exiting).
@@ -97,7 +98,6 @@ impl Vehicle {
             Direction::East => self.x += d,
             Direction::West => self.x -= d,
         }
-        self.distance_traveled += d;
     }
 
     /// Move one tick along the pre-computed crossing path.
@@ -113,16 +113,15 @@ impl Vehicle {
         let speed = self.current_speed;
 
         if dist <= speed {
+            // Update angle to face the snapped waypoint before moving past it.
+            self.angle_deg = (dx.atan2(-dy).to_degrees() + 360.0) % 360.0;
             self.x = tx;
             self.y = ty;
             self.waypoint_idx += 1;
-            self.distance_traveled += dist;
             self.waypoint_idx >= self.crossing_path.len()
         } else {
             self.x += dx / dist * speed;
             self.y += dy / dist * speed;
-            self.distance_traveled += speed;
-            // keep angle aligned with movement vector
             self.angle_deg = (dx.atan2(-dy).to_degrees() + 360.0) % 360.0;
             false
         }

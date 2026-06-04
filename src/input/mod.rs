@@ -64,11 +64,11 @@ impl InputHandler {
         let route = random_route(rng);
         let (sx, sy) = spawn_pos(direction, route);
 
-        // Block if any existing vehicle is too close to the spawn point.
+        // Block if any existing vehicle is within the minimum following gap of the spawn point.
         let blocked = vehicles.iter().any(|v| {
             let dx = v.x - sx;
             let dy = v.y - sy;
-            (dx * dx + dy * dy).sqrt() < crate::vehicle::physics::SAFETY_DISTANCE
+            (dx * dx + dy * dy).sqrt() < crate::vehicle::physics::MIN_FOLLOWING_GAP
         });
 
         if !blocked {

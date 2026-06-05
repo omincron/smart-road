@@ -525,4 +525,81 @@ mod tests {
         mgr.cleanup_expired(expire_at);
         assert!(mgr.try_reserve(1, Direction::North, Route::Left, expire_at));
     }
+
+    // ── try_reserve_timed (AIM time-slot path) ────────────────────────────────
+
+    #[test]
+    fn timed_reserve_grants_slot_with_valid_speed() {
+        let mut mgr = IntersectionManager::new();
+        let result = mgr.try_reserve_timed(0, Direction::South, Route::Straight, 0, 100.0);
+        let (_, speed) = result.expect("timed reserve should succeed");
+        assert!(
+            (Speed::SLOW_PX..=Speed::FAST_PX).contains(&speed),
+            "speed {speed} outside [SLOW, FAST]"
+        );
+    }
+
+    #[test]
+    fn timed_reserve_same_vehicle_keeps_entry_tick() {
+        let mut mgr = IntersectionManager::new();
+        let (entry1, _) = mgr
+            .try_reserve_timed(0, Direction::South, Route::Straight, 0, 100.0)
+            .unwrap();
+        // Second call one tick later — existing reservation should be reused.
+        let (entry2, _) = mgr
+            .try_reserve_timed(0, Direction::South, Route::Straight, 1, 99.0)
+            .unwrap();
+        assert_eq!(
+            entry1, entry2,
+            "same vehicle must keep its reserved entry tick"
+        );
+    }
+
+    #[test]
+    fn timed_reserve_conflicting_windows_do_not_overlap() {
+        let mut mgr = IntersectionManager::new();
+        // S_s (index 1) and N_l (index 5) conflict.
+        let (e0, _) = mgr
+            .try_reserve_timed(0, Direction::South, Route::Straight, 0, 100.0)
+            .unwrap();
+        let (e1, _) = mgr
+            .try_reserve_timed(1, Direction::North, Route::Left, 0, 100.0)
+            .unwrap();
+
+        let len0 = crossing_path_length(Direction::South, Route::Straight);
+        let len1 = crossing_path_length(Direction::North, Route::Left);
+        let exit0 = e0 + (len0 / CROSSING_SPEED).ceil() as u64 + GRACE_TICKS;
+        let exit1 = e1 + (len1 / CROSSING_SPEED).ceil() as u64 + GRACE_TICKS;
+
+        let overlap = e0 < exit1 && e1 < exit0;
+        assert!(
+            !overlap,
+            "conflicting windows overlap: [{e0}, {exit0}) and [{e1}, {exit1})"
+        );
+    }
+
+    #[test]
+    fn timed_reserve_non_conflicting_can_both_enter_immediately() {
+        let mut mgr = IntersectionManager::new();
+        // Right turns never conflict — both should get immediate slots.
+        let r0 = mgr.try_reserve_timed(0, Direction::South, Route::Right, 0, 50.0);
+        let r1 = mgr.try_reserve_timed(1, Direction::North, Route::Right, 0, 50.0);
+        assert!(r0.is_some());
+        assert!(r1.is_some());
+    }
+
+    #[test]
+    fn timed_reserve_releases_and_allows_rebook() {
+        let mut mgr = IntersectionManager::new();
+        let (entry, _) = mgr
+            .try_reserve_timed(0, Direction::South, Route::Straight, 0, 100.0)
+            .unwrap();
+        mgr.release(0);
+        // After release, a conflicting vehicle should now get a slot at the original time.
+        let (entry2, _) = mgr
+            .try_reserve_timed(1, Direction::North, Route::Left, 0, 100.0)
+            .unwrap();
+        // The conflicting vehicle can now enter as early as vehicle 0 would have.
+        assert!(entry2 <= entry + GRACE_TICKS);
+    }
 }

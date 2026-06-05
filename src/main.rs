@@ -350,3 +350,202 @@ fn main() {
         renderer.present();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vehicle::physics::MIN_FOLLOWING_GAP;
+    use vehicle::{Direction, Route, Speed, Vehicle, VehicleState};
+
+    // snapshot entry shorthand
+    fn snap(
+        id: u32,
+        dir: Direction,
+        x: f32,
+        y: f32,
+        state: VehicleState,
+    ) -> (u32, Direction, f32, f32, VehicleState) {
+        (id, dir, x, y, state)
+    }
+
+    fn approaching(id: u32, dir: Direction, x: f32, y: f32) -> Vehicle {
+        Vehicle::new(id, x, y, dir, Route::Straight)
+    }
+
+    // ── min_leader_gap_in_lane ────────────────────────────────────────────────
+
+    #[test]
+    fn leader_gap_max_when_no_vehicles() {
+        let gap = min_leader_gap_in_lane(0, Direction::North, 400.0, 700.0, &[]);
+        assert_eq!(gap, f32::MAX);
+    }
+
+    #[test]
+    fn leader_gap_ignores_wrong_direction() {
+        let s = vec![snap(
+            1,
+            Direction::South,
+            400.0,
+            600.0,
+            VehicleState::Approaching,
+        )];
+        let gap = min_leader_gap_in_lane(0, Direction::North, 400.0, 700.0, &s);
+        assert_eq!(gap, f32::MAX);
+    }
+
+    #[test]
+    fn leader_gap_ignores_self() {
+        let s = vec![snap(
+            0,
+            Direction::North,
+            400.0,
+            600.0,
+            VehicleState::Approaching,
+        )];
+        let gap = min_leader_gap_in_lane(0, Direction::North, 400.0, 700.0, &s);
+        assert_eq!(gap, f32::MAX);
+    }
+
+    #[test]
+    fn leader_gap_ignores_vehicle_behind() {
+        // North direction: leader must be at smaller y (ahead). y=800 is behind y=700.
+        let s = vec![snap(
+            1,
+            Direction::North,
+            400.0,
+            800.0,
+            VehicleState::Approaching,
+        )];
+        let gap = min_leader_gap_in_lane(0, Direction::North, 400.0, 700.0, &s);
+        assert_eq!(gap, f32::MAX);
+    }
+
+    #[test]
+    fn leader_gap_ignores_crossing_vehicles() {
+        let s = vec![snap(
+            1,
+            Direction::North,
+            400.0,
+            600.0,
+            VehicleState::Crossing,
+        )];
+        let gap = min_leader_gap_in_lane(0, Direction::North, 400.0, 700.0, &s);
+        assert_eq!(gap, f32::MAX);
+    }
+
+    #[test]
+    fn leader_gap_returns_nearest_ahead() {
+        // Two vehicles ahead at 100 and 200 px axial distance.
+        let s = vec![
+            snap(1, Direction::North, 400.0, 600.0, VehicleState::Approaching), // 100 ahead
+            snap(2, Direction::North, 400.0, 500.0, VehicleState::Approaching), // 200 ahead
+        ];
+        let gap = min_leader_gap_in_lane(0, Direction::North, 400.0, 700.0, &s);
+        assert!((gap - 100.0).abs() < 1.0, "expected 100, got {gap}");
+    }
+
+    // ── max_follow_speed ──────────────────────────────────────────────────────
+
+    #[test]
+    fn max_follow_speed_zero_when_at_min_gap() {
+        let speed = max_follow_speed(MIN_FOLLOWING_GAP);
+        assert_eq!(speed, 0.0);
+    }
+
+    #[test]
+    fn max_follow_speed_zero_when_inside_min_gap() {
+        let speed = max_follow_speed(MIN_FOLLOWING_GAP - 10.0);
+        assert_eq!(speed, 0.0);
+    }
+
+    #[test]
+    fn max_follow_speed_clamped_to_fast_px() {
+        let speed = max_follow_speed(f32::MAX);
+        assert_eq!(speed, Speed::FAST_PX);
+    }
+
+    #[test]
+    fn max_follow_speed_positive_with_clearance() {
+        let speed = max_follow_speed(MIN_FOLLOWING_GAP + 100.0);
+        assert!(speed > 0.0);
+        assert!(speed <= Speed::FAST_PX);
+    }
+
+    // ── is_following_violation ────────────────────────────────────────────────
+
+    #[test]
+    fn following_violation_true_when_too_close() {
+        // Axial distance 50 < MIN_FOLLOWING_GAP (72).
+        let a = approaching(0, Direction::North, 400.0, 700.0);
+        let b = approaching(1, Direction::North, 400.0, 650.0);
+        assert!(is_following_violation(&a, &b));
+    }
+
+    #[test]
+    fn following_violation_false_when_far_enough() {
+        // Axial distance 200 > MIN_FOLLOWING_GAP.
+        let a = approaching(0, Direction::North, 400.0, 700.0);
+        let b = approaching(1, Direction::North, 400.0, 500.0);
+        assert!(!is_following_violation(&a, &b));
+    }
+
+    #[test]
+    fn following_violation_false_for_different_directions() {
+        let a = approaching(0, Direction::North, 400.0, 700.0);
+        let b = approaching(1, Direction::South, 400.0, 650.0);
+        assert!(!is_following_violation(&a, &b));
+    }
+
+    #[test]
+    fn following_violation_false_when_transversely_separated() {
+        // Same direction but in different lanes (> 20 px apart transversely).
+        let a = approaching(0, Direction::North, 400.0, 700.0);
+        let b = approaching(1, Direction::North, 430.0, 650.0); // 30 px apart in x
+        assert!(!is_following_violation(&a, &b));
+    }
+
+    #[test]
+    fn following_violation_false_when_either_is_crossing() {
+        let a = approaching(0, Direction::North, 400.0, 700.0);
+        let mut b = approaching(1, Direction::North, 400.0, 650.0);
+        b.state = VehicleState::Crossing;
+        assert!(!is_following_violation(&a, &b));
+    }
+
+    // ── approach_target_speed ─────────────────────────────────────────────────
+
+    #[test]
+    fn approach_speed_fast_far_from_stop_line() {
+        // North: stop line at cy + rw = 400 + 82 = 482. Vehicle at y=900 → dist=418 > 200.
+        let speed = approach_target_speed(0, Direction::North, 400.0, 900.0, &[]);
+        assert_eq!(speed, Speed::FAST_PX);
+    }
+
+    #[test]
+    fn approach_speed_normal_at_medium_distance() {
+        // y=600 → dist = 600 - 482 = 118, between 80 and 200.
+        let speed = approach_target_speed(0, Direction::North, 400.0, 600.0, &[]);
+        assert_eq!(speed, Speed::NORMAL_PX);
+    }
+
+    #[test]
+    fn approach_speed_slow_near_stop_line() {
+        // y=520 → dist = 520 - 482 = 38 < 80.
+        let speed = approach_target_speed(0, Direction::North, 400.0, 520.0, &[]);
+        assert_eq!(speed, Speed::SLOW_PX);
+    }
+
+    #[test]
+    fn approach_speed_capped_by_close_leader() {
+        // Vehicle far from stop line but has a leader very close ahead.
+        let s = vec![snap(
+            1,
+            Direction::North,
+            400.0,
+            860.0, // 60 px ahead of vehicle at 920 → gap < 80 → SLOW
+            VehicleState::Approaching,
+        )];
+        let speed = approach_target_speed(0, Direction::North, 400.0, 920.0, &s);
+        assert_eq!(speed, Speed::SLOW_PX);
+    }
+}

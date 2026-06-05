@@ -81,13 +81,20 @@ fn max_follow_speed(gap: f32) -> f32 {
     (clearance * SMOOTH_ALPHA).clamp(0.0, Speed::FAST_PX)
 }
 
+/// Distance threshold (px) beyond which a free-approach vehicle travels at full speed.
+const APPROACH_FAR_PX: f32 = 200.0;
+/// Distance threshold (px) below which a free-approach vehicle slows to minimum speed.
+const APPROACH_NEAR_PX: f32 = 80.0;
+/// Extra margin beyond the window edge before an Exiting vehicle is considered off-screen.
+const OFFSCREEN_MARGIN: f32 = 80.0;
+
 /// Target speed for an approaching vehicle outside the reservation zone.
-/// Fast > 200 px from stop line or leader, Normal 80–200 px, Slow < 80 px.
+/// Fast > APPROACH_FAR_PX from stop line or leader, Normal in between, Slow < APPROACH_NEAR_PX.
 fn approach_target_speed(dist_to_stop: f32, leader_gap: f32) -> f32 {
     let constraint = dist_to_stop.min(leader_gap);
-    if constraint > 200.0 {
+    if constraint > APPROACH_FAR_PX {
         Speed::FAST_PX
-    } else if constraint > 80.0 {
+    } else if constraint > APPROACH_NEAR_PX {
         Speed::NORMAL_PX
     } else {
         Speed::SLOW_PX
@@ -262,7 +269,11 @@ fn main() {
                         v.advance();
                         let w = renderer::WINDOW_W as f32;
                         let h = renderer::WINDOW_H as f32;
-                        if v.x < -80.0 || v.x > w + 80.0 || v.y < -80.0 || v.y > h + 80.0 {
+                        if v.x < -OFFSCREEN_MARGIN
+                            || v.x > w + OFFSCREEN_MARGIN
+                            || v.y < -OFFSCREEN_MARGIN
+                            || v.y > h + OFFSCREEN_MARGIN
+                        {
                             v.state = VehicleState::Done;
                             v.exit_tick = Some(tick);
                             if let Some(transit) = v.transit_ticks() {
@@ -322,7 +333,9 @@ fn main() {
         renderer.draw_road();
         renderer.draw_vehicles(&vehicles);
 
-        if sim_state == SimState::ShowingStats {
+        if sim_state == SimState::Running {
+            renderer.draw_hud(&font, vehicles.len(), stats.close_calls);
+        } else {
             renderer.draw_stats_overlay(&font, &stats);
         }
 

@@ -70,9 +70,7 @@ impl<'tc> Renderer<'tc> {
     pub fn draw_road(&mut self) {
         // Blit the cross-road PNG scaled to fill the window.
         let dest = Rect::new(0, 0, WINDOW_W, WINDOW_H);
-        self.canvas
-            .copy(&self.road_texture, None, Some(dest))
-            .unwrap();
+        let _ = self.canvas.copy(&self.road_texture, None, Some(dest));
 
         // Draw stop lines on top so they match the simulation's lane geometry.
         self.draw_stop_lines();
@@ -84,36 +82,30 @@ impl<'tc> Renderer<'tc> {
         const T: u32 = 3;
 
         // southbound — top edge, left half (x: 280–400)
-        self.canvas
-            .fill_rect(Rect::new(
-                CENTER_X - ROAD_W,
-                CENTER_Y - ROAD_W - T as i32,
-                ROAD_W as u32,
-                T,
-            ))
-            .unwrap();
+        let _ = self.canvas.fill_rect(Rect::new(
+            CENTER_X - ROAD_W,
+            CENTER_Y - ROAD_W - T as i32,
+            ROAD_W as u32,
+            T,
+        ));
         // northbound — bottom edge, right half (x: 400–520)
-        self.canvas
-            .fill_rect(Rect::new(CENTER_X, CENTER_Y + ROAD_W, ROAD_W as u32, T))
-            .unwrap();
+        let _ = self
+            .canvas
+            .fill_rect(Rect::new(CENTER_X, CENTER_Y + ROAD_W, ROAD_W as u32, T));
         // westbound — right edge, top half (y: 280–400)
-        self.canvas
-            .fill_rect(Rect::new(
-                CENTER_X + ROAD_W,
-                CENTER_Y - ROAD_W,
-                T,
-                ROAD_W as u32,
-            ))
-            .unwrap();
+        let _ = self.canvas.fill_rect(Rect::new(
+            CENTER_X + ROAD_W,
+            CENTER_Y - ROAD_W,
+            T,
+            ROAD_W as u32,
+        ));
         // eastbound — left edge, bottom half (y: 400–520)
-        self.canvas
-            .fill_rect(Rect::new(
-                CENTER_X - ROAD_W - T as i32,
-                CENTER_Y,
-                T,
-                ROAD_W as u32,
-            ))
-            .unwrap();
+        let _ = self.canvas.fill_rect(Rect::new(
+            CENTER_X - ROAD_W - T as i32,
+            CENTER_Y,
+            T,
+            ROAD_W as u32,
+        ));
     }
 
     pub fn draw_vehicles(&mut self, vehicles: &[Vehicle]) {
@@ -131,17 +123,15 @@ impl<'tc> Renderer<'tc> {
         );
         // Sprite already faces North (0°), so angle_deg maps directly to copy_ex.
         let angle = v.angle_deg as f64;
-        self.canvas
-            .copy_ex(
-                &self.car_texture,
-                None,
-                Some(dest),
-                angle,
-                None,
-                false,
-                false,
-            )
-            .unwrap();
+        let _ = self.canvas.copy_ex(
+            &self.car_texture,
+            None,
+            Some(dest),
+            angle,
+            None,
+            false,
+            false,
+        );
     }
 
     /// Overlay shown when the simulation ends — renders the stats panel with text.
@@ -159,27 +149,23 @@ impl<'tc> Renderer<'tc> {
 
         // Dim background
         self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 170));
-        self.canvas
-            .fill_rect(Rect::new(0, 0, WINDOW_W, WINDOW_H))
-            .unwrap();
+        let _ = self.canvas.fill_rect(Rect::new(0, 0, WINDOW_W, WINDOW_H));
 
         // Panel background
         self.canvas.set_draw_color(Color::RGBA(15, 15, 35, 235));
-        self.canvas
-            .fill_rect(Rect::new(px, py, pw as u32, ph as u32))
-            .unwrap();
+        let _ = self
+            .canvas
+            .fill_rect(Rect::new(px, py, pw as u32, ph as u32));
 
         // Panel border
         self.canvas.set_draw_color(Color::RGB(140, 160, 220));
         for t in 0..2_i32 {
-            self.canvas
-                .draw_rect(Rect::new(
-                    px - t,
-                    py - t,
-                    (pw + 2 * t) as u32,
-                    (ph + 2 * t) as u32,
-                ))
-                .unwrap();
+            let _ = self.canvas.draw_rect(Rect::new(
+                px - t,
+                py - t,
+                (pw + 2 * t) as u32,
+                (ph + 2 * t) as u32,
+            ));
         }
 
         self.canvas.set_blend_mode(sdl2::render::BlendMode::None);
@@ -195,6 +181,12 @@ impl<'tc> Renderer<'tc> {
             };
             self.draw_text(font, line, px, py + PAD + i as i32 * LINE_H, color);
         }
+    }
+
+    /// Small top-left HUD showing live vehicle count and accumulated close-call count.
+    pub fn draw_hud(&mut self, font: &sdl2::ttf::Font, vehicle_count: usize, close_calls: u32) {
+        let text = format!("  Vehicles: {vehicle_count}   Close calls: {close_calls}  ");
+        self.draw_text(font, &text, 8, 8, Color::RGB(200, 230, 200));
     }
 
     pub fn present(&mut self) {

@@ -170,6 +170,10 @@ const CROSSING_SPEED: f32 = Speed::NORMAL_PX;
 /// Extra ticks added to crossing window to absorb speed-smoothing imprecision.
 const GRACE_TICKS: u64 = 10;
 
+/// Extra search window beyond the maximum slow-speed arrival time.
+/// Gives the AIM scheduler room to find a slot even when the intersection is busy.
+const SEARCH_WINDOW_EXTRA_TICKS: u64 = 400;
+
 struct TimedReservation {
     vehicle_id: u32,
     path_idx: usize,
@@ -232,7 +236,9 @@ impl IntersectionManager {
 
         // Search window: earliest arrival at full speed, latest at crawl speed + buffer.
         let earliest = current_tick + (dist_to_stop / Speed::FAST_PX).ceil() as u64;
-        let search_max = current_tick + (dist_to_stop / Speed::SLOW_PX).floor() as u64 + 400;
+        let search_max = current_tick
+            + (dist_to_stop / Speed::SLOW_PX).floor() as u64
+            + SEARCH_WINDOW_EXTRA_TICKS;
 
         let mut entry = earliest;
         while entry <= search_max {

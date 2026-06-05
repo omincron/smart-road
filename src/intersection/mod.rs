@@ -226,21 +226,29 @@ impl IntersectionManager {
         let earliest = current_tick + (dist_to_stop / Speed::FAST_PX).ceil() as u64;
         let search_max = current_tick + (dist_to_stop / Speed::SLOW_PX).floor() as u64 + 400;
 
-        for entry in earliest..=search_max {
+        let mut entry = earliest;
+        while entry <= search_max {
             let exit = entry + crossing_ticks;
-            let blocked = self.reservations.iter().any(|r| {
-                CONFLICTS[idx][r.path_idx] && entry < r.exit_tick && r.entry_tick < exit
-            });
-            if !blocked {
-                let ticks_until = (entry - current_tick).max(1) as f32;
-                let speed = (dist_to_stop / ticks_until).clamp(Speed::SLOW_PX, Speed::FAST_PX);
-                self.reservations.push(TimedReservation {
-                    vehicle_id,
-                    path_idx: idx,
-                    entry_tick: entry,
-                    exit_tick: exit,
-                });
-                return Some((entry, speed));
+            // Find the earliest exit_tick among all conflicting reservations overlapping
+            // [entry, exit). If any exist, jump straight to that tick — skipping the
+            // entire blocked window in one step rather than iterating tick-by-tick.
+            let jump_to = self.reservations.iter()
+                .filter(|r| CONFLICTS[idx][r.path_idx] && entry < r.exit_tick && r.entry_tick < exit)
+                .map(|r| r.exit_tick)
+                .min();
+            match jump_to {
+                None => {
+                    let ticks_until = (entry - current_tick).max(1) as f32;
+                    let speed = (dist_to_stop / ticks_until).clamp(Speed::SLOW_PX, Speed::FAST_PX);
+                    self.reservations.push(TimedReservation {
+                        vehicle_id,
+                        path_idx: idx,
+                        entry_tick: entry,
+                        exit_tick: exit,
+                    });
+                    return Some((entry, speed));
+                }
+                Some(next) => entry = next,
             }
         }
         None

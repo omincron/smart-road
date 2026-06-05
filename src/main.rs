@@ -42,17 +42,6 @@ fn main() {
     let mut renderer = Renderer::new(canvas, &texture_creator);
     let mut event_pump = sdl.event_pump().expect("event pump failed");
 
-    let ttf = sdl2::ttf::init().expect("SDL2 TTF init failed");
-    let font_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-    ];
-    let font = font_paths
-        .iter()
-        .find_map(|p| ttf.load_font(p, 20).ok())
-        .expect("no usable font found; install fonts-dejavu-core");
-
     let mut rng = thread_rng();
     let mut input = InputHandler::new();
     let mut manager = IntersectionManager::new();
@@ -99,9 +88,9 @@ fn main() {
         renderer.draw_vehicles(&vehicles);
 
         if sim_state == SimState::Running {
-            renderer.draw_hud(&font, vehicles.len(), stats.close_calls);
+            renderer.draw_hud(vehicles.len(), stats.close_calls);
         } else {
-            renderer.draw_stats_overlay(&font, &stats);
+            renderer.draw_stats_overlay(&stats);
         }
 
         renderer.present();

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, Canvas, Texture, TextureCreator};
@@ -14,10 +12,21 @@ pub const WINDOW_H: u32 = 800;
 
 pub const CENTER_X: i32 = WINDOW_W as i32 / 2; // 400
 pub const CENTER_Y: i32 = WINDOW_H as i32 / 2; // 400
-pub const ROAD_W: i32 = 82; // half-width of road from center — matched to cross-road.png
+pub const ROAD_W: i32 = 82; // half-width of road from center - matched to cross-road.png
 pub const LANE_W: i32 = ROAD_W / 3; // 27px per lane
 
-// ── colours ──────────────────────────────────────────────────────────────────
+// Tiny bitmap font used for HUD and overlay text. This keeps the app free of
+// native SDL_ttf linkage while still rendering readable labels.
+const TEXT_SCALE: i32 = 3;
+const GLYPH_W: i32 = 5;
+const GLYPH_H: i32 = 7;
+const GLYPH_ADVANCE: i32 = (GLYPH_W + 1) * TEXT_SCALE;
+const LINE_ADVANCE: i32 = (GLYPH_H + 2) * TEXT_SCALE;
+
+// Rendered size of a vehicle sprite (portrait - car faces North by default).
+const CAR_W: u32 = 24;
+const CAR_H: u32 = 34;
+
 const C_STOP: Color = Color {
     r: 255,
     g: 255,
@@ -25,48 +34,10 @@ const C_STOP: Color = Color {
     a: 255,
 }; // stop lines
 
-// Rendered size of a vehicle sprite (portrait — car faces North by default).
-const CAR_W: u32 = 24;
-const CAR_H: u32 = 34;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct TextKey {
-    text: String,
-    color: [u8; 4],
-}
-
-fn text_key(text: &str, color: Color) -> TextKey {
-    TextKey {
-        text: text.to_owned(),
-        color: [color.r, color.g, color.b, color.a],
-    }
-}
-
-struct TextCache<T> {
-    entries: HashMap<TextKey, T>,
-}
-
-impl<T> TextCache<T> {
-    fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-        }
-    }
-
-    fn get_or_insert_with<F>(&mut self, key: TextKey, build: F) -> &T
-    where
-        F: FnOnce() -> T,
-    {
-        self.entries.entry(key).or_insert_with(build)
-    }
-}
-
 pub struct Renderer<'tc> {
     pub canvas: Canvas<Window>,
-    tc: &'tc TextureCreator<WindowContext>,
     road_texture: Texture<'tc>,
     car_texture: Texture<'tc>,
-    text_cache: TextCache<Texture<'tc>>,
 }
 
 impl<'tc> Renderer<'tc> {
@@ -75,34 +46,51 @@ impl<'tc> Renderer<'tc> {
         let car_texture = load_car_texture(tc);
         Renderer {
             canvas,
-            tc,
             road_texture,
             car_texture,
-            text_cache: TextCache::new(),
         }
     }
 
-    fn draw_text(&mut self, font: &sdl2::ttf::Font, text: &str, x: i32, y: i32, color: Color) {
+    fn draw_text(&mut self, text: &str, x: i32, y: i32, color: Color) {
         if text.is_empty() {
             return;
         }
-        let key = text_key(text, color);
-        if !self.text_cache.entries.contains_key(&key) {
-            let Ok(surface) = font.render(text).blended(color) else {
-                return;
-            };
-            let Ok(texture) = self.tc.create_texture_from_surface(&surface) else {
-                return;
-            };
-            self.text_cache.entries.insert(key.clone(), texture);
+
+        let mut cursor_x = x;
+        let mut cursor_y = y;
+        for ch in text.chars() {
+            if ch == '\n' {
+                cursor_x = x;
+                cursor_y += LINE_ADVANCE;
+                continue;
+            }
+
+            if let Some(glyph) = glyph_for(ch) {
+                self.draw_glyph(glyph, cursor_x, cursor_y, color);
+            }
+            cursor_x += GLYPH_ADVANCE;
         }
-        let Some(texture) = self.text_cache.entries.get(&key) else {
-            return;
-        };
-        let q = texture.query();
-        let _ = self
-            .canvas
-            .copy(&texture, None, Some(Rect::new(x, y, q.width, q.height)));
+    }
+
+    fn draw_glyph(&mut self, glyph: [&'static str; 7], x: i32, y: i32, color: Color) {
+        self.canvas.set_draw_color(color);
+
+        for (row_idx, row) in glyph.iter().enumerate() {
+            for (col_idx, cell) in row.chars().enumerate() {
+                if cell == ' ' {
+                    continue;
+                }
+
+                let px = x + col_idx as i32 * TEXT_SCALE;
+                let py = y + row_idx as i32 * TEXT_SCALE;
+                let _ = self.canvas.fill_rect(Rect::new(
+                    px,
+                    py,
+                    TEXT_SCALE as u32,
+                    TEXT_SCALE as u32,
+                ));
+            }
+        }
     }
 
     pub fn clear(&mut self) {
@@ -124,25 +112,25 @@ impl<'tc> Renderer<'tc> {
         self.canvas.set_draw_color(C_STOP);
         const T: u32 = 3;
 
-        // southbound — top edge, left half (x: 280–400)
+        // southbound - top edge, left half (x: 280-400)
         let _ = self.canvas.fill_rect(Rect::new(
             CENTER_X - ROAD_W,
             CENTER_Y - ROAD_W - T as i32,
             ROAD_W as u32,
             T,
         ));
-        // northbound — bottom edge, right half (x: 400–520)
+        // northbound - bottom edge, right half (x: 400-520)
         let _ = self
             .canvas
             .fill_rect(Rect::new(CENTER_X, CENTER_Y + ROAD_W, ROAD_W as u32, T));
-        // westbound — right edge, top half (y: 280–400)
+        // westbound - right edge, top half (y: 280-400)
         let _ = self.canvas.fill_rect(Rect::new(
             CENTER_X + ROAD_W,
             CENTER_Y - ROAD_W,
             T,
             ROAD_W as u32,
         ));
-        // eastbound — left edge, bottom half (y: 400–520)
+        // eastbound - left edge, bottom half (y: 400-520)
         let _ = self.canvas.fill_rect(Rect::new(
             CENTER_X - ROAD_W - T as i32,
             CENTER_Y,
@@ -164,7 +152,7 @@ impl<'tc> Renderer<'tc> {
             CAR_W,
             CAR_H,
         );
-        // Sprite already faces North (0°), so angle_deg maps directly to copy_ex.
+        // Sprite already faces North (0deg), so angle_deg maps directly to copy_ex.
         let angle = v.angle_deg as f64;
         let _ = self.canvas.copy_ex(
             &self.car_texture,
@@ -177,18 +165,22 @@ impl<'tc> Renderer<'tc> {
         );
     }
 
-    /// Overlay shown when the simulation ends — renders the stats panel with text.
-    pub fn draw_stats_overlay(&mut self, font: &sdl2::ttf::Font, stats: &StatsAccumulator) {
-        const LINE_H: i32 = 28;
+    /// Overlay shown when the simulation ends - renders the stats panel with text.
+    pub fn draw_stats_overlay(&mut self, stats: &StatsAccumulator) {
         const PAD: i32 = 20;
 
         let lines = stats.stat_lines();
-        let pw: i32 = 380;
-        let ph: i32 = PAD + lines.len() as i32 * LINE_H + PAD;
+        let max_line_w = lines
+            .iter()
+            .map(|line| measure_text_width(line))
+            .max()
+            .unwrap_or(0);
+        let pw: i32 = (max_line_w + PAD * 2).max(320).min(WINDOW_W as i32 - 40);
+        let ph: i32 = PAD + lines.len() as i32 * LINE_ADVANCE + PAD;
         let px = (WINDOW_W as i32 - pw) / 2;
         let py = (WINDOW_H as i32 - ph) / 2;
 
-        self.canvas.set_blend_mode(sdl2::render::BlendMode::Blend);
+        self.canvas.set_blend_mode(BlendMode::Blend);
 
         // Dim background
         self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 170));
@@ -211,25 +203,25 @@ impl<'tc> Renderer<'tc> {
             ));
         }
 
-        self.canvas.set_blend_mode(sdl2::render::BlendMode::None);
+        self.canvas.set_blend_mode(BlendMode::None);
 
         // Text lines
         for (i, line) in lines.iter().enumerate() {
             let color = if i == 0 {
-                Color::RGB(200, 220, 255) // title highlight
+                Color::RGB(200, 220, 255)
             } else if i == lines.len() - 1 {
-                Color::RGB(140, 140, 160) // footer hint
+                Color::RGB(140, 140, 160)
             } else {
                 Color::WHITE
             };
-            self.draw_text(font, line, px, py + PAD + i as i32 * LINE_H, color);
+            self.draw_text(line, px + PAD, py + PAD + i as i32 * LINE_ADVANCE, color);
         }
     }
 
     /// Small top-left HUD showing live vehicle count and accumulated close-call count.
-    pub fn draw_hud(&mut self, font: &sdl2::ttf::Font, vehicle_count: usize, close_calls: u32) {
+    pub fn draw_hud(&mut self, vehicle_count: usize, close_calls: u32) {
         let text = format!("  Vehicles: {vehicle_count}   Close calls: {close_calls}  ");
-        self.draw_text(font, &text, 8, 8, Color::RGB(200, 230, 200));
+        self.draw_text(&text, 8, 8, Color::RGB(200, 230, 200));
     }
 
     pub fn present(&mut self) {
@@ -320,49 +312,65 @@ fn strip_background(img: &mut image::RgbaImage) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn text_key_distinguishes_color() {
-        let a = text_key("HUD", Color::RGBA(1, 2, 3, 4));
-        let b = text_key("HUD", Color::RGBA(1, 2, 3, 5));
-        assert_ne!(a, b);
+fn measure_text_width(text: &str) -> i32 {
+    let mut max_width = 0;
+    let mut current_width = 0;
+    for ch in text.chars() {
+        if ch == '\n' {
+            max_width = max_width.max(current_width);
+            current_width = 0;
+            continue;
+        }
+        current_width += GLYPH_ADVANCE;
     }
+    max_width.max(current_width)
+}
 
-    #[test]
-    fn text_cache_reuses_existing_entries() {
-        let mut cache = TextCache::new();
-        let key = text_key("Speed: 42", Color::WHITE);
-
-        let first_ptr = {
-            let value = cache.get_or_insert_with(key.clone(), || String::from("first"));
-            value.as_ptr()
-        };
-
-        let second_ptr = {
-            let value = cache.get_or_insert_with(key, || String::from("second"));
-            value.as_ptr()
-        };
-
-        assert_eq!(first_ptr, second_ptr);
-        assert_eq!(cache.entries.len(), 1);
-        assert_eq!(
-            cache
-                .entries
-                .values()
-                .next()
-                .expect("cache should contain one entry"),
-            "first"
-        );
-    }
-
-    #[test]
-    fn text_cache_stores_separate_entries_for_different_keys() {
-        let mut cache = TextCache::new();
-        let _ = cache.get_or_insert_with(text_key("a", Color::WHITE), || 1);
-        let _ = cache.get_or_insert_with(text_key("b", Color::WHITE), || 2);
-        assert_eq!(cache.entries.len(), 2);
-    }
+fn glyph_for(ch: char) -> Option<[&'static str; 7]> {
+    let ch = ch.to_ascii_uppercase();
+    Some(match ch {
+        'A' => [" ### ", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"],
+        'B' => ["#### ", "#   #", "#   #", "#### ", "#   #", "#   #", "#### "],
+        'C' => [" ### ", "#   #", "#    ", "#    ", "#    ", "#   #", " ### "],
+        'D' => ["#### ", "#   #", "#   #", "#   #", "#   #", "#   #", "#### "],
+        'E' => ["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#####"],
+        'F' => ["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#    "],
+        'G' => [" ### ", "#   #", "#    ", "# ###", "#   #", "#   #", " ### "],
+        'H' => ["#   #", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"],
+        'I' => ["#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "#####"],
+        'J' => ["#####", "    #", "    #", "    #", "#   #", "#   #", " ### "],
+        'K' => ["#   #", "#  # ", "# #  ", "##   ", "# #  ", "#  # ", "#   #"],
+        'L' => ["#    ", "#    ", "#    ", "#    ", "#    ", "#    ", "#####"],
+        'M' => ["#   #", "## ##", "# # #", "#   #", "#   #", "#   #", "#   #"],
+        'N' => ["#   #", "##  #", "# # #", "#  ##", "#   #", "#   #", "#   #"],
+        'O' => [" ### ", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "],
+        'P' => ["#### ", "#   #", "#   #", "#### ", "#    ", "#    ", "#    "],
+        'Q' => [" ### ", "#   #", "#   #", "#   #", "# # #", "#  # ", " ## #"],
+        'R' => ["#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #"],
+        'S' => [" ####", "#    ", "#    ", " ### ", "    #", "    #", "#### "],
+        'T' => ["#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  "],
+        'U' => ["#   #", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "],
+        'V' => ["#   #", "#   #", "#   #", "#   #", " # # ", " # # ", "  #  "],
+        'W' => ["#   #", "#   #", "#   #", "# # #", "# # #", "## ##", "#   #"],
+        'X' => ["#   #", " # # ", " # # ", "  #  ", " # # ", " # # ", "#   #"],
+        'Y' => ["#   #", " # # ", " # # ", "  #  ", "  #  ", "  #  ", "  #  "],
+        'Z' => ["#####", "    #", "   # ", "  #  ", " #   ", "#    ", "#####"],
+        '0' => [" ### ", "#   #", "#  ##", "# # #", "##  #", "#   #", " ### "],
+        '1' => ["  #  ", " ##  ", "# #  ", "  #  ", "  #  ", "  #  ", "#####"],
+        '2' => [" ### ", "#   #", "    #", "  ## ", " #   ", "#    ", "#####"],
+        '3' => [" ### ", "#   #", "    #", " ### ", "    #", "#   #", " ### "],
+        '4' => ["#   #", "#   #", "#   #", "#####", "    #", "    #", "    #"],
+        '5' => ["#####", "#    ", "#    ", "#### ", "    #", "    #", "#### "],
+        '6' => [" ### ", "#    ", "#    ", "#### ", "#   #", "#   #", " ### "],
+        '7' => ["#####", "    #", "   # ", "  #  ", " #   ", " #   ", " #   "],
+        '8' => [" ### ", "#   #", "#   #", " ### ", "#   #", "#   #", " ### "],
+        '9' => [" ### ", "#   #", "#   #", " ####", "    #", "    #", " ### "],
+        ':' => ["     ", "  ## ", "  ## ", "     ", "  ## ", "  ## ", "     "],
+        '.' => ["     ", "     ", "     ", "     ", "     ", "  ## ", "  ## "],
+        '/' => ["    #", "   # ", "   # ", "  #  ", " #   ", " #   ", "#    "],
+        '-' => ["     ", "     ", "     ", " ### ", "     ", "     ", "     "],
+        '+' => ["     ", "  #  ", "  #  ", "#####", "  #  ", "  #  ", "     "],
+        ' ' => ["     ", "     ", "     ", "     ", "     ", "     ", "     "],
+        _ => return None,
+    })
 }

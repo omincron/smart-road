@@ -1,8 +1,8 @@
-mod intersection;
-mod vehicle;
-mod renderer;
 mod input;
+mod intersection;
+mod renderer;
 mod statistics;
+mod vehicle;
 
 use std::collections::HashSet;
 
@@ -14,8 +14,8 @@ use input::InputHandler;
 use intersection::IntersectionManager;
 use renderer::Renderer;
 use statistics::StatsAccumulator;
-use vehicle::{Direction, Speed, VehicleState, direction_to_angle};
 use vehicle::physics::{MIN_FOLLOWING_GAP, SMOOTH_ALPHA};
+use vehicle::{Direction, Speed, VehicleState, direction_to_angle};
 
 /// Center-to-centre axial gap to the nearest vehicle ahead in the same approach lane.
 /// Returns f32::MAX when no leader exists.
@@ -26,27 +26,33 @@ fn min_leader_gap_in_lane(
     y: f32,
     snapshot: &[(u32, Direction, f32, f32, VehicleState)],
 ) -> f32 {
-    snapshot.iter()
+    snapshot
+        .iter()
         .filter(|&&(oid, odir, ox, oy, ostate)| {
-            if oid == id || odir != dir { return false; }
-            if matches!(ostate, VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done) {
+            if oid == id || odir != dir {
+                return false;
+            }
+            if matches!(
+                ostate,
+                VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done
+            ) {
                 return false;
             }
             let ahead = match dir {
                 Direction::North => oy < y,
                 Direction::South => oy > y,
-                Direction::East  => ox > x,
-                Direction::West  => ox < x,
+                Direction::East => ox > x,
+                Direction::West => ox < x,
             };
             let transverse = match dir {
                 Direction::North | Direction::South => (ox - x).abs(),
-                Direction::East  | Direction::West  => (oy - y).abs(),
+                Direction::East | Direction::West => (oy - y).abs(),
             };
             ahead && transverse <= 20.0
         })
         .map(|&(_, _, ox, oy, _)| match dir {
             Direction::North | Direction::South => (oy - y).abs(),
-            Direction::East  | Direction::West  => (ox - x).abs(),
+            Direction::East | Direction::West => (ox - x).abs(),
         })
         .fold(f32::MAX, f32::min)
 }
@@ -60,21 +66,31 @@ fn max_follow_speed(gap: f32) -> f32 {
 
 /// True if two Approaching/Waiting vehicles in the same lane are inside the safe following gap.
 fn is_following_violation(a: &vehicle::Vehicle, b: &vehicle::Vehicle) -> bool {
-    if a.direction != b.direction { return false; }
-    if matches!(a.state, VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done) {
+    if a.direction != b.direction {
         return false;
     }
-    if matches!(b.state, VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done) {
+    if matches!(
+        a.state,
+        VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done
+    ) {
+        return false;
+    }
+    if matches!(
+        b.state,
+        VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done
+    ) {
         return false;
     }
     let transverse = match a.direction {
         Direction::North | Direction::South => (a.x - b.x).abs(),
-        Direction::East  | Direction::West  => (a.y - b.y).abs(),
+        Direction::East | Direction::West => (a.y - b.y).abs(),
     };
-    if transverse > 20.0 { return false; }
+    if transverse > 20.0 {
+        return false;
+    }
     let axial = match a.direction {
         Direction::North | Direction::South => (a.y - b.y).abs(),
-        Direction::East  | Direction::West  => (a.x - b.x).abs(),
+        Direction::East | Direction::West => (a.x - b.x).abs(),
     };
     axial < MIN_FOLLOWING_GAP
 }
@@ -134,7 +150,8 @@ fn main() {
         .build()
         .expect("canvas creation failed");
 
-    let mut renderer = Renderer::new(canvas);
+    let texture_creator = canvas.texture_creator();
+    let mut renderer = Renderer::new(canvas, &texture_creator);
     let mut event_pump = sdl.event_pump().expect("event pump failed");
 
     let ttf = sdl2::ttf::init().expect("SDL2 TTF init failed");
@@ -161,15 +178,18 @@ fn main() {
         for event in event_pump.poll_iter() {
             match &event {
                 Event::Quit { .. } => break 'running,
-                Event::KeyDown { keycode: Some(Keycode::Escape), .. } => match sim_state {
+                Event::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    ..
+                } => match sim_state {
                     SimState::Running => sim_state = SimState::ShowingStats,
                     SimState::ShowingStats => break 'running,
                 },
                 _ => {
-                    if sim_state == SimState::Running {
-                        if !input.handle_event(&event, &mut vehicles, &mut rng) {
-                            break 'running;
-                        }
+                    if sim_state == SimState::Running
+                        && !input.handle_event(&event, &mut vehicles, &mut rng)
+                    {
+                        break 'running;
                     }
                 }
             }
@@ -214,7 +234,11 @@ fn main() {
                             let dist = intersection::dist_to_stop_line(v.direction, v.x, v.y);
                             if dist <= intersection::RESERVATION_DIST {
                                 match manager.try_reserve_timed(
-                                    v.id, v.direction, v.route, tick, dist,
+                                    v.id,
+                                    v.direction,
+                                    v.route,
+                                    tick,
+                                    dist,
                                 ) {
                                     Some((entry, spd)) => {
                                         v.reservation = Some(entry);
@@ -226,17 +250,20 @@ fn main() {
                                     }
                                 }
                             } else {
-                                v.target_speed = approach_target_speed(
-                                    v.id, v.direction, v.x, v.y, &snapshot,
-                                );
+                                v.target_speed =
+                                    approach_target_speed(v.id, v.direction, v.x, v.y, &snapshot);
                             }
 
                             // 2. Cap by safe following speed — overrides AIM when a leader
                             //    is close. Caps current_speed too so smooth_speed can't
                             //    carry excess momentum into this tick's advance().
-                            let follow_cap = max_follow_speed(
-                                min_leader_gap_in_lane(v.id, v.direction, v.x, v.y, &snapshot),
-                            );
+                            let follow_cap = max_follow_speed(min_leader_gap_in_lane(
+                                v.id,
+                                v.direction,
+                                v.x,
+                                v.y,
+                                &snapshot,
+                            ));
                             v.target_speed = v.target_speed.min(follow_cap);
                             v.current_speed = v.current_speed.min(follow_cap);
 

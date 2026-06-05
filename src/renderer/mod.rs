@@ -12,38 +12,54 @@ pub const WINDOW_H: u32 = 800;
 
 pub const CENTER_X: i32 = WINDOW_W as i32 / 2; // 400
 pub const CENTER_Y: i32 = WINDOW_H as i32 / 2; // 400
-pub const ROAD_W: i32 = 82;  // half-width of road from center — matched to cross-road.png
+pub const ROAD_W: i32 = 82; // half-width of road from center — matched to cross-road.png
 pub const LANE_W: i32 = ROAD_W / 3; // 27px per lane
 
 // ── colours ──────────────────────────────────────────────────────────────────
-const C_STOP: Color = Color { r: 255, g: 255, b: 255, a: 255 }; // stop lines
+const C_STOP: Color = Color {
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 255,
+}; // stop lines
 
 // Rendered size of a vehicle sprite (portrait — car faces North by default).
 const CAR_W: u32 = 24;
 const CAR_H: u32 = 34;
 
-pub struct Renderer {
+pub struct Renderer<'tc> {
     pub canvas: Canvas<Window>,
-    texture_creator: TextureCreator<WindowContext>,
-    // SAFETY: both textures are declared after texture_creator so they are dropped first.
-    road_texture: Texture<'static>,
-    car_texture: Texture<'static>,
+    tc: &'tc TextureCreator<WindowContext>,
+    road_texture: Texture<'tc>,
+    car_texture: Texture<'tc>,
 }
 
-impl Renderer {
-    pub fn new(canvas: Canvas<Window>) -> Self {
-        let texture_creator = canvas.texture_creator();
-        let road_texture = load_rgb_texture(&texture_creator, "assets/cross-road.png");
-        let car_texture = load_car_texture(&texture_creator);
-        Renderer { canvas, texture_creator, road_texture, car_texture }
+impl<'tc> Renderer<'tc> {
+    pub fn new(canvas: Canvas<Window>, tc: &'tc TextureCreator<WindowContext>) -> Self {
+        let road_texture = load_rgb_texture(tc, "assets/cross-road.png");
+        let car_texture = load_car_texture(tc);
+        Renderer {
+            canvas,
+            tc,
+            road_texture,
+            car_texture,
+        }
     }
 
     fn draw_text(&mut self, font: &sdl2::ttf::Font, text: &str, x: i32, y: i32, color: Color) {
-        if text.is_empty() { return; }
-        let Ok(surface) = font.render(text).blended(color) else { return };
-        let Ok(texture) = self.texture_creator.create_texture_from_surface(&surface) else { return };
+        if text.is_empty() {
+            return;
+        }
+        let Ok(surface) = font.render(text).blended(color) else {
+            return;
+        };
+        let Ok(texture) = self.tc.create_texture_from_surface(&surface) else {
+            return;
+        };
         let q = texture.query();
-        let _ = self.canvas.copy(&texture, None, Some(Rect::new(x, y, q.width, q.height)));
+        let _ = self
+            .canvas
+            .copy(&texture, None, Some(Rect::new(x, y, q.width, q.height)));
     }
 
     pub fn clear(&mut self) {
@@ -54,7 +70,9 @@ impl Renderer {
     pub fn draw_road(&mut self) {
         // Blit the cross-road PNG scaled to fill the window.
         let dest = Rect::new(0, 0, WINDOW_W, WINDOW_H);
-        self.canvas.copy(&self.road_texture, None, Some(dest)).unwrap();
+        self.canvas
+            .copy(&self.road_texture, None, Some(dest))
+            .unwrap();
 
         // Draw stop lines on top so they match the simulation's lane geometry.
         self.draw_stop_lines();
@@ -67,7 +85,12 @@ impl Renderer {
 
         // southbound — top edge, left half (x: 280–400)
         self.canvas
-            .fill_rect(Rect::new(CENTER_X - ROAD_W, CENTER_Y - ROAD_W - T as i32, ROAD_W as u32, T))
+            .fill_rect(Rect::new(
+                CENTER_X - ROAD_W,
+                CENTER_Y - ROAD_W - T as i32,
+                ROAD_W as u32,
+                T,
+            ))
             .unwrap();
         // northbound — bottom edge, right half (x: 400–520)
         self.canvas
@@ -75,11 +98,21 @@ impl Renderer {
             .unwrap();
         // westbound — right edge, top half (y: 280–400)
         self.canvas
-            .fill_rect(Rect::new(CENTER_X + ROAD_W, CENTER_Y - ROAD_W, T, ROAD_W as u32))
+            .fill_rect(Rect::new(
+                CENTER_X + ROAD_W,
+                CENTER_Y - ROAD_W,
+                T,
+                ROAD_W as u32,
+            ))
             .unwrap();
         // eastbound — left edge, bottom half (y: 400–520)
         self.canvas
-            .fill_rect(Rect::new(CENTER_X - ROAD_W - T as i32, CENTER_Y, T, ROAD_W as u32))
+            .fill_rect(Rect::new(
+                CENTER_X - ROAD_W - T as i32,
+                CENTER_Y,
+                T,
+                ROAD_W as u32,
+            ))
             .unwrap();
     }
 
@@ -93,11 +126,22 @@ impl Renderer {
         let dest = Rect::new(
             v.x as i32 - CAR_W as i32 / 2,
             v.y as i32 - CAR_H as i32 / 2,
-            CAR_W, CAR_H,
+            CAR_W,
+            CAR_H,
         );
         // Sprite already faces North (0°), so angle_deg maps directly to copy_ex.
         let angle = v.angle_deg as f64;
-        self.canvas.copy_ex(&self.car_texture, None, Some(dest), angle, None, false, false).unwrap();
+        self.canvas
+            .copy_ex(
+                &self.car_texture,
+                None,
+                Some(dest),
+                angle,
+                None,
+                false,
+                false,
+            )
+            .unwrap();
     }
 
     /// Overlay shown when the simulation ends — renders the stats panel with text.
@@ -115,17 +159,26 @@ impl Renderer {
 
         // Dim background
         self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 170));
-        self.canvas.fill_rect(Rect::new(0, 0, WINDOW_W, WINDOW_H)).unwrap();
+        self.canvas
+            .fill_rect(Rect::new(0, 0, WINDOW_W, WINDOW_H))
+            .unwrap();
 
         // Panel background
         self.canvas.set_draw_color(Color::RGBA(15, 15, 35, 235));
-        self.canvas.fill_rect(Rect::new(px, py, pw as u32, ph as u32)).unwrap();
+        self.canvas
+            .fill_rect(Rect::new(px, py, pw as u32, ph as u32))
+            .unwrap();
 
         // Panel border
         self.canvas.set_draw_color(Color::RGB(140, 160, 220));
         for t in 0..2_i32 {
             self.canvas
-                .draw_rect(Rect::new(px - t, py - t, (pw + 2 * t) as u32, (ph + 2 * t) as u32))
+                .draw_rect(Rect::new(
+                    px - t,
+                    py - t,
+                    (pw + 2 * t) as u32,
+                    (ph + 2 * t) as u32,
+                ))
                 .unwrap();
         }
 
@@ -150,7 +203,7 @@ impl Renderer {
 }
 
 /// Decode an RGB(A) PNG and upload it as an SDL2 texture (no background stripping).
-fn load_rgb_texture(tc: &TextureCreator<WindowContext>, path: &str) -> Texture<'static> {
+fn load_rgb_texture<'tc>(tc: &'tc TextureCreator<WindowContext>, path: &str) -> Texture<'tc> {
     let img = image::open(path)
         .unwrap_or_else(|_| panic!("failed to open {path}"))
         .into_rgba8();
@@ -158,16 +211,12 @@ fn load_rgb_texture(tc: &TextureCreator<WindowContext>, path: &str) -> Texture<'
     let mut pixels = img.into_raw();
     let surface = Surface::from_data(&mut pixels, w, h, w * 4, PixelFormatEnum::RGBA32)
         .expect("failed to create surface");
-    let texture = tc.create_texture_from_surface(&surface)
-        .expect("failed to upload texture to GPU");
-    // SAFETY: texture_creator outlives the texture (see Renderer field declaration order).
-    unsafe { std::mem::transmute(texture) }
+    tc.create_texture_from_surface(&surface)
+        .expect("failed to upload texture to GPU")
 }
 
 /// Decode the car PNG, strip the solid background via flood-fill, and upload as an SDL2 texture.
-/// Returns a Texture with a transmuted 'static lifetime — safe because the caller
-/// stores it after the TextureCreator in the same struct (dropped first).
-fn load_car_texture(tc: &TextureCreator<WindowContext>) -> Texture<'static> {
+fn load_car_texture<'tc>(tc: &'tc TextureCreator<WindowContext>) -> Texture<'tc> {
     let mut img = image::open("assets/car.png")
         .expect("failed to open car sprite")
         .into_rgba8();
@@ -182,12 +231,11 @@ fn load_car_texture(tc: &TextureCreator<WindowContext>) -> Texture<'static> {
     let surface = Surface::from_data(&mut pixels, w, h, w * 4, PixelFormatEnum::RGBA32)
         .expect("failed to create surface from car pixels");
 
-    let mut texture = tc.create_texture_from_surface(&surface)
+    let mut texture = tc
+        .create_texture_from_surface(&surface)
         .expect("failed to upload car texture to GPU");
     texture.set_blend_mode(BlendMode::Blend);
-
-    // SAFETY: texture_creator outlives car_texture (see Renderer field declaration order).
-    unsafe { std::mem::transmute(texture) }
+    texture
 }
 
 /// BFS flood-fill from all four corners, making every connected near-background pixel
@@ -200,9 +248,8 @@ fn strip_background(img: &mut image::RgbaImage) {
     };
     const TOL: i32 = 35;
 
-    let matches = |p: &image::Rgba<u8>| -> bool {
-        (0..3).all(|i| (p[i] as i32 - bg[i] as i32).abs() <= TOL)
-    };
+    let matches =
+        |p: &image::Rgba<u8>| -> bool { (0..3).all(|i| (p[i] as i32 - bg[i] as i32).abs() <= TOL) };
 
     let mut visited = vec![false; (w * h) as usize];
     let mut queue = std::collections::VecDeque::new();
@@ -222,8 +269,10 @@ fn strip_background(img: &mut image::RgbaImage) {
         img.put_pixel(x, y, image::Rgba([0, 0, 0, 0]));
 
         for (nx, ny) in [
-            (x.wrapping_sub(1), y), (x + 1, y),
-            (x, y.wrapping_sub(1)), (x, y + 1),
+            (x.wrapping_sub(1), y),
+            (x + 1, y),
+            (x, y.wrapping_sub(1)),
+            (x, y + 1),
         ] {
             if nx < w && ny < h {
                 let nidx = (ny * w + nx) as usize;

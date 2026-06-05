@@ -40,8 +40,12 @@ impl StatsAccumulator {
 
     /// Call each tick with the current speed (px/tick) of every active vehicle.
     pub fn record_speed(&mut self, px_per_tick: f32) {
-        if px_per_tick > self.max_velocity { self.max_velocity = px_per_tick; }
-        if px_per_tick < self.min_velocity { self.min_velocity = px_per_tick; }
+        if px_per_tick > self.max_velocity {
+            self.max_velocity = px_per_tick;
+        }
+        if px_per_tick < self.min_velocity {
+            self.min_velocity = px_per_tick;
+        }
     }
 
     /// Call each tick with every pair of vehicles that violates the safety gap.
@@ -63,9 +67,18 @@ impl StatsAccumulator {
         v.push(String::new());
         v.push(format!("  Vehicles passed : {}", self.vehicles_passed));
         if self.max_velocity > f32::MIN {
-            v.push(format!("  Max velocity    : {:.0} px/s", self.max_velocity * FPS));
-            v.push(format!("  Min velocity    : {:.0} px/s",
-                if self.min_velocity < f32::MAX { self.min_velocity * FPS } else { 0.0 }));
+            v.push(format!(
+                "  Max velocity    : {:.0} px/s",
+                self.max_velocity * FPS
+            ));
+            v.push(format!(
+                "  Min velocity    : {:.0} px/s",
+                if self.min_velocity < f32::MAX {
+                    self.min_velocity * FPS
+                } else {
+                    0.0
+                }
+            ));
         }
         match (self.max_transit, self.min_transit) {
             (Some(max), Some(min)) => {
@@ -81,5 +94,88 @@ impl StatsAccumulator {
         v.push(String::new());
         v.push("  Press ESC to quit".to_string());
         v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_stats() -> StatsAccumulator {
+        StatsAccumulator::new()
+    }
+
+    #[test]
+    fn record_exit_increments_vehicles_passed() {
+        let mut s = make_stats();
+        assert_eq!(s.vehicles_passed, 0);
+        s.record_exit(100);
+        assert_eq!(s.vehicles_passed, 1);
+        s.record_exit(200);
+        assert_eq!(s.vehicles_passed, 2);
+    }
+
+    #[test]
+    fn record_exit_tracks_min_max_transit() {
+        let mut s = make_stats();
+        s.record_exit(50);
+        s.record_exit(200);
+        s.record_exit(100);
+        let lines = s.stat_lines();
+        let joined = lines.join("\n");
+        assert!(joined.contains("Max transit"), "missing max transit line");
+        assert!(joined.contains("Min transit"), "missing min transit line");
+    }
+
+    #[test]
+    fn record_speed_tracks_min_and_max() {
+        let mut s = make_stats();
+        s.record_speed(1.5);
+        s.record_speed(5.0);
+        s.record_speed(3.0);
+        assert!((s.max_velocity - 5.0).abs() < f32::EPSILON);
+        assert!((s.min_velocity - 1.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn update_violations_counts_new_pairs_only() {
+        let mut s = make_stats();
+        let pair = (0u32, 1u32);
+
+        // First tick: pair enters violation — counts as 1.
+        let mut current = HashSet::new();
+        current.insert(pair);
+        s.update_violations(current.clone());
+        assert_eq!(s.close_calls, 1);
+
+        // Second tick: same pair still active — should NOT increment.
+        s.update_violations(current);
+        assert_eq!(s.close_calls, 1);
+
+        // Third tick: pair resolved — no increment.
+        s.update_violations(HashSet::new());
+        assert_eq!(s.close_calls, 1);
+
+        // Fourth tick: pair re-enters — counts as a new event.
+        let mut renewed = HashSet::new();
+        renewed.insert(pair);
+        s.update_violations(renewed);
+        assert_eq!(s.close_calls, 2);
+    }
+
+    #[test]
+    fn record_gap_tracks_minimum() {
+        let mut s = make_stats();
+        s.record_gap(80.0);
+        s.record_gap(30.0);
+        s.record_gap(50.0);
+        assert!((s.min_gap_px - 30.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn stat_lines_no_panic_on_empty_stats() {
+        let s = make_stats();
+        let lines = s.stat_lines();
+        assert!(!lines.is_empty());
     }
 }

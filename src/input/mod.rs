@@ -18,7 +18,11 @@ pub struct InputHandler {
 
 impl InputHandler {
     pub fn new() -> Self {
-        InputHandler { random_mode: false, random_timer: 0, next_id: 0 }
+        InputHandler {
+            random_mode: false,
+            random_timer: 0,
+            next_id: 0,
+        }
     }
 
     /// Handle one SDL2 event. Only processes vehicle-spawn keys; returns false
@@ -31,11 +35,13 @@ impl InputHandler {
     ) -> bool {
         match event {
             Event::Quit { .. } => return false,
-            Event::KeyDown { keycode: Some(key), .. } => match *key {
-                Keycode::Up    => self.try_spawn(Direction::North, vehicles, rng),
-                Keycode::Down  => self.try_spawn(Direction::South, vehicles, rng),
-                Keycode::Right => self.try_spawn(Direction::East,  vehicles, rng),
-                Keycode::Left  => self.try_spawn(Direction::West,  vehicles, rng),
+            Event::KeyDown {
+                keycode: Some(key), ..
+            } => match *key {
+                Keycode::Up => self.try_spawn(Direction::North, vehicles, rng),
+                Keycode::Down => self.try_spawn(Direction::South, vehicles, rng),
+                Keycode::Right => self.try_spawn(Direction::East, vehicles, rng),
+                Keycode::Left => self.try_spawn(Direction::West, vehicles, rng),
                 Keycode::R => {
                     self.random_mode = !self.random_mode;
                     self.random_timer = 0;
@@ -60,7 +66,12 @@ impl InputHandler {
         }
     }
 
-    fn try_spawn<R: Rng>(&mut self, direction: Direction, vehicles: &mut Vec<Vehicle>, rng: &mut R) {
+    fn try_spawn<R: Rng>(
+        &mut self,
+        direction: Direction,
+        vehicles: &mut Vec<Vehicle>,
+        rng: &mut R,
+    ) {
         let route = random_route(rng);
         let (sx, sy) = spawn_pos(direction, route);
 

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, Canvas, Texture, TextureCreator};
@@ -27,11 +29,44 @@ const C_STOP: Color = Color {
 const CAR_W: u32 = 24;
 const CAR_H: u32 = 34;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TextKey {
+    text: String,
+    color: [u8; 4],
+}
+
+fn text_key(text: &str, color: Color) -> TextKey {
+    TextKey {
+        text: text.to_owned(),
+        color: [color.r, color.g, color.b, color.a],
+    }
+}
+
+struct TextCache<T> {
+    entries: HashMap<TextKey, T>,
+}
+
+impl<T> TextCache<T> {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    fn get_or_insert_with<F>(&mut self, key: TextKey, build: F) -> &T
+    where
+        F: FnOnce() -> T,
+    {
+        self.entries.entry(key).or_insert_with(build)
+    }
+}
+
 pub struct Renderer<'tc> {
     pub canvas: Canvas<Window>,
     tc: &'tc TextureCreator<WindowContext>,
     road_texture: Texture<'tc>,
     car_texture: Texture<'tc>,
+    text_cache: TextCache<Texture<'tc>>,
 }
 
 impl<'tc> Renderer<'tc> {
@@ -43,6 +78,7 @@ impl<'tc> Renderer<'tc> {
             tc,
             road_texture,
             car_texture,
+            text_cache: TextCache::new(),
         }
     }
 
@@ -50,10 +86,17 @@ impl<'tc> Renderer<'tc> {
         if text.is_empty() {
             return;
         }
-        let Ok(surface) = font.render(text).blended(color) else {
-            return;
-        };
-        let Ok(texture) = self.tc.create_texture_from_surface(&surface) else {
+        let key = text_key(text, color);
+        if !self.text_cache.entries.contains_key(&key) {
+            let Ok(surface) = font.render(text).blended(color) else {
+                return;
+            };
+            let Ok(texture) = self.tc.create_texture_from_surface(&surface) else {
+                return;
+            };
+            self.text_cache.entries.insert(key.clone(), texture);
+        }
+        let Some(texture) = self.text_cache.entries.get(&key) else {
             return;
         };
         let q = texture.query();
@@ -274,5 +317,52 @@ fn strip_background(img: &mut image::RgbaImage) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_key_distinguishes_color() {
+        let a = text_key("HUD", Color::RGBA(1, 2, 3, 4));
+        let b = text_key("HUD", Color::RGBA(1, 2, 3, 5));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn text_cache_reuses_existing_entries() {
+        let mut cache = TextCache::new();
+        let key = text_key("Speed: 42", Color::WHITE);
+
+        let first_ptr = {
+            let value = cache.get_or_insert_with(key.clone(), || String::from("first"));
+            value.as_ptr()
+        };
+
+        let second_ptr = {
+            let value = cache.get_or_insert_with(key, || String::from("second"));
+            value.as_ptr()
+        };
+
+        assert_eq!(first_ptr, second_ptr);
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(
+            cache
+                .entries
+                .values()
+                .next()
+                .expect("cache should contain one entry"),
+            "first"
+        );
+    }
+
+    #[test]
+    fn text_cache_stores_separate_entries_for_different_keys() {
+        let mut cache = TextCache::new();
+        let _ = cache.get_or_insert_with(text_key("a", Color::WHITE), || 1);
+        let _ = cache.get_or_insert_with(text_key("b", Color::WHITE), || 2);
+        assert_eq!(cache.entries.len(), 2);
     }
 }

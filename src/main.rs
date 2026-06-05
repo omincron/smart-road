@@ -19,7 +19,8 @@ use vehicle::{Direction, Route, Speed, VehicleState, direction_to_angle};
 
 // ── Per-lane O(n) leader lookup ───────────────────────────────────────────────
 // Key: (Direction, Route). Value: (vehicle_id, axial_progress) sorted ascending.
-// Only Approaching/Waiting vehicles are included.
+// Includes vehicles that still block the approach lane, including a Crossing
+// vehicle that has not yet moved off the stop line.
 type LaneGroups = HashMap<(Direction, Route), Vec<(u32, f32)>>;
 
 /// Converts a vehicle position to a scalar that increases as the vehicle approaches
@@ -37,7 +38,10 @@ fn axial_pos(dir: Direction, x: f32, y: f32) -> f32 {
 fn build_lane_groups(vehicles: &[vehicle::Vehicle]) -> LaneGroups {
     let mut groups: LaneGroups = HashMap::new();
     for v in vehicles {
-        if matches!(v.state, VehicleState::Approaching | VehicleState::Waiting) {
+        let at_stop = intersection::dist_to_stop_line(v.direction, v.x, v.y).abs() < 0.5;
+        if matches!(v.state, VehicleState::Approaching | VehicleState::Waiting)
+            || matches!(v.state, VehicleState::Crossing) && at_stop
+        {
             groups
                 .entry((v.direction, v.route))
                 .or_default()
@@ -423,6 +427,22 @@ mod tests {
         a.state = VehicleState::Waiting;
         let groups = build_lane_groups(&[a]);
         assert_eq!(groups[&(Direction::North, Route::Straight)].len(), 1);
+    }
+
+    #[test]
+    fn build_lane_groups_includes_crossing_vehicle_at_stop_line() {
+        let mut a = veh(0, Direction::North, Route::Straight, 400.0, 482.0);
+        a.state = VehicleState::Crossing;
+        let groups = build_lane_groups(&[a]);
+        assert_eq!(groups[&(Direction::North, Route::Straight)].len(), 1);
+    }
+
+    #[test]
+    fn build_lane_groups_excludes_crossing_vehicle_after_clearing_stop_line() {
+        let mut a = veh(0, Direction::North, Route::Straight, 400.0, 470.0);
+        a.state = VehicleState::Crossing;
+        let groups = build_lane_groups(&[a]);
+        assert!(!groups.contains_key(&(Direction::North, Route::Straight)));
     }
 
     // ── lane_leader_gap ───────────────────────────────────────────────────────

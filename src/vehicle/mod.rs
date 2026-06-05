@@ -10,7 +10,7 @@ pub enum Direction {
     West,  // travelling west, enters from east
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Route {
     Right,
     Straight,

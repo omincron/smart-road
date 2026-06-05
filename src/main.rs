@@ -4,7 +4,7 @@ mod renderer;
 mod statistics;
 mod vehicle;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rand::thread_rng;
 use sdl2::event::Event;
@@ -15,46 +15,63 @@ use intersection::IntersectionManager;
 use renderer::Renderer;
 use statistics::StatsAccumulator;
 use vehicle::physics::{MIN_FOLLOWING_GAP, SMOOTH_ALPHA};
-use vehicle::{Direction, Speed, VehicleState, direction_to_angle};
+use vehicle::{Direction, Route, Speed, VehicleState, direction_to_angle};
 
-/// Center-to-centre axial gap to the nearest vehicle ahead in the same approach lane.
+// ── Per-lane O(n) leader lookup ───────────────────────────────────────────────
+// Key: (Direction, Route). Value: (vehicle_id, axial_progress) sorted ascending.
+// Only Approaching/Waiting vehicles are included.
+type LaneGroups = HashMap<(Direction, Route), Vec<(u32, f32)>>;
+
+/// Converts a vehicle position to a scalar that increases as the vehicle approaches
+/// the intersection. Values are comparable only within the same (Direction, Route) lane.
+fn axial_pos(dir: Direction, x: f32, y: f32) -> f32 {
+    match dir {
+        Direction::North => -y,
+        Direction::South => y,
+        Direction::East => x,
+        Direction::West => -x,
+    }
+}
+
+/// Build per-lane sorted groups from the current vehicle list (O(n log n)).
+fn build_lane_groups(vehicles: &[vehicle::Vehicle]) -> LaneGroups {
+    let mut groups: LaneGroups = HashMap::new();
+    for v in vehicles {
+        if matches!(v.state, VehicleState::Approaching | VehicleState::Waiting) {
+            groups
+                .entry((v.direction, v.route))
+                .or_default()
+                .push((v.id, axial_pos(v.direction, v.x, v.y)));
+        }
+    }
+    for group in groups.values_mut() {
+        group.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    groups
+}
+
+/// Centre-to-centre axial gap to the nearest leader in the same lane (O(log n)).
 /// Returns f32::MAX when no leader exists.
-fn min_leader_gap_in_lane(
+fn lane_leader_gap(
     id: u32,
     dir: Direction,
+    route: Route,
     x: f32,
     y: f32,
-    snapshot: &[(u32, Direction, f32, f32, VehicleState)],
+    groups: &LaneGroups,
 ) -> f32 {
-    snapshot
+    let my_pos = axial_pos(dir, x, y);
+    let group = match groups.get(&(dir, route)) {
+        Some(g) => g,
+        None => return f32::MAX,
+    };
+    // Group is sorted ascending; leader = first entry strictly ahead (pos > my_pos).
+    let start = group.partition_point(|&(_, pos)| pos <= my_pos);
+    group[start..]
         .iter()
-        .filter(|&&(oid, odir, ox, oy, ostate)| {
-            if oid == id || odir != dir {
-                return false;
-            }
-            if matches!(
-                ostate,
-                VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done
-            ) {
-                return false;
-            }
-            let ahead = match dir {
-                Direction::North => oy < y,
-                Direction::South => oy > y,
-                Direction::East => ox > x,
-                Direction::West => ox < x,
-            };
-            let transverse = match dir {
-                Direction::North | Direction::South => (ox - x).abs(),
-                Direction::East | Direction::West => (oy - y).abs(),
-            };
-            ahead && transverse <= 20.0
-        })
-        .map(|&(_, _, ox, oy, _)| match dir {
-            Direction::North | Direction::South => (oy - y).abs(),
-            Direction::East | Direction::West => (ox - x).abs(),
-        })
-        .fold(f32::MAX, f32::min)
+        .find(|&&(gid, _)| gid != id)
+        .map(|&(_, leader_pos)| leader_pos - my_pos)
+        .unwrap_or(f32::MAX)
 }
 
 /// Maximum safe target speed given a centre-to-centre leader gap.
@@ -64,60 +81,10 @@ fn max_follow_speed(gap: f32) -> f32 {
     (clearance * SMOOTH_ALPHA).clamp(0.0, Speed::FAST_PX)
 }
 
-/// True if two Approaching/Waiting vehicles in the same lane are inside the safe following gap.
-fn is_following_violation(a: &vehicle::Vehicle, b: &vehicle::Vehicle) -> bool {
-    if a.direction != b.direction {
-        return false;
-    }
-    if matches!(
-        a.state,
-        VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done
-    ) {
-        return false;
-    }
-    if matches!(
-        b.state,
-        VehicleState::Crossing | VehicleState::Exiting | VehicleState::Done
-    ) {
-        return false;
-    }
-    let transverse = match a.direction {
-        Direction::North | Direction::South => (a.x - b.x).abs(),
-        Direction::East | Direction::West => (a.y - b.y).abs(),
-    };
-    if transverse > 20.0 {
-        return false;
-    }
-    let axial = match a.direction {
-        Direction::North | Direction::South => (a.y - b.y).abs(),
-        Direction::East | Direction::West => (a.x - b.x).abs(),
-    };
-    axial < MIN_FOLLOWING_GAP
-}
-
-/// True if the nearest leader in the same lane is within the minimum following gap.
-fn is_blocked_ahead(
-    id: u32,
-    dir: Direction,
-    x: f32,
-    y: f32,
-    snapshot: &[(u32, Direction, f32, f32, VehicleState)],
-) -> bool {
-    min_leader_gap_in_lane(id, dir, x, y, snapshot) < MIN_FOLLOWING_GAP
-}
-
 /// Target speed for an approaching vehicle outside the reservation zone.
 /// Fast > 200 px from stop line or leader, Normal 80–200 px, Slow < 80 px.
-fn approach_target_speed(
-    id: u32,
-    dir: Direction,
-    x: f32,
-    y: f32,
-    snapshot: &[(u32, Direction, f32, f32, VehicleState)],
-) -> f32 {
-    let dist_stop = intersection::dist_to_stop_line(dir, x, y);
-    let gap = min_leader_gap_in_lane(id, dir, x, y, snapshot);
-    let constraint = dist_stop.min(gap);
+fn approach_target_speed(dist_to_stop: f32, leader_gap: f32) -> f32 {
+    let constraint = dist_to_stop.min(leader_gap);
     if constraint > 200.0 {
         Speed::FAST_PX
     } else if constraint > 80.0 {
@@ -201,11 +168,8 @@ fn main() {
             // ── simulation update ─────────────────────────────────────────────
             let mut exits: Vec<u64> = Vec::new();
 
-            // Snapshot used for same-lane following-distance checks.
-            let snapshot: Vec<(u32, Direction, f32, f32, VehicleState)> = vehicles
-                .iter()
-                .map(|v| (v.id, v.direction, v.x, v.y, v.state))
-                .collect();
+            // Per-lane sorted groups for O(n) leader lookup — built once per tick.
+            let groups = build_lane_groups(&vehicles);
 
             manager.cleanup_expired(tick);
 
@@ -230,8 +194,12 @@ fn main() {
                                 v.state = VehicleState::Waiting;
                             }
                         } else {
-                            // 1. Compute desired target speed from AIM or leader-following.
+                            // Compute lane leader gap once — used for speed, cap, and blocking.
+                            let gap =
+                                lane_leader_gap(v.id, v.direction, v.route, v.x, v.y, &groups);
                             let dist = intersection::dist_to_stop_line(v.direction, v.x, v.y);
+
+                            // 1. Desired target speed from AIM or free-flow following.
                             if dist <= intersection::RESERVATION_DIST {
                                 match manager.try_reserve_timed(
                                     v.id,
@@ -250,26 +218,19 @@ fn main() {
                                     }
                                 }
                             } else {
-                                v.target_speed =
-                                    approach_target_speed(v.id, v.direction, v.x, v.y, &snapshot);
+                                v.target_speed = approach_target_speed(dist, gap);
                             }
 
                             // 2. Cap by safe following speed — overrides AIM when a leader
                             //    is close. Caps current_speed too so smooth_speed can't
                             //    carry excess momentum into this tick's advance().
-                            let follow_cap = max_follow_speed(min_leader_gap_in_lane(
-                                v.id,
-                                v.direction,
-                                v.x,
-                                v.y,
-                                &snapshot,
-                            ));
+                            let follow_cap = max_follow_speed(gap);
                             v.target_speed = v.target_speed.min(follow_cap);
                             v.current_speed = v.current_speed.min(follow_cap);
 
                             // 3. Interpolate toward target, then advance.
                             v.smooth_speed();
-                            if !is_blocked_ahead(v.id, v.direction, v.x, v.y, &snapshot) {
+                            if gap >= MIN_FOLLOWING_GAP {
                                 v.advance();
                             }
                         }
@@ -319,18 +280,36 @@ fn main() {
 
             // ── close-call detection ──────────────────────────────────────────
             let mut violations: HashSet<(u32, u32)> = HashSet::new();
-            for i in 0..vehicles.len() {
-                for j in (i + 1)..vehicles.len() {
-                    let (a, b) = (&vehicles[i], &vehicles[j]);
+
+            // Same-lane following violations: O(n) over consecutive sorted pairs.
+            for group in groups.values() {
+                for w in group.windows(2) {
+                    let (id_a, pos_a) = w[0];
+                    let (id_b, pos_b) = w[1];
+                    let axial_gap = pos_b - pos_a;
+                    stats.record_gap(axial_gap);
+                    if axial_gap < MIN_FOLLOWING_GAP {
+                        violations.insert((id_a.min(id_b), id_a.max(id_b)));
+                    }
+                }
+            }
+
+            // Physical proximity for vehicles in the intersection zone: O(k²), k small.
+            let in_zone: Vec<&vehicle::Vehicle> = vehicles
+                .iter()
+                .filter(|v| matches!(v.state, VehicleState::Crossing | VehicleState::Exiting))
+                .collect();
+            for i in 0..in_zone.len() {
+                for j in (i + 1)..in_zone.len() {
+                    let (a, b) = (in_zone[i], in_zone[j]);
                     let gap = vehicle::physics::distance(a.x, a.y, b.x, b.y);
                     stats.record_gap(gap);
-                    if vehicle::physics::is_close_call(a.x, a.y, b.x, b.y)
-                        || is_following_violation(a, b)
-                    {
+                    if vehicle::physics::is_close_call(a.x, a.y, b.x, b.y) {
                         violations.insert((a.id.min(b.id), a.id.max(b.id)));
                     }
                 }
             }
+
             stats.update_violations(violations);
 
             vehicles.retain(|v| v.state != VehicleState::Done);
@@ -355,92 +334,135 @@ fn main() {
 mod tests {
     use super::*;
     use vehicle::physics::MIN_FOLLOWING_GAP;
-    use vehicle::{Direction, Route, Speed, Vehicle, VehicleState};
+    use vehicle::{Direction, Route, Speed, VehicleState};
 
-    // snapshot entry shorthand
-    fn snap(
-        id: u32,
-        dir: Direction,
-        x: f32,
-        y: f32,
-        state: VehicleState,
-    ) -> (u32, Direction, f32, f32, VehicleState) {
-        (id, dir, x, y, state)
+    fn veh(id: u32, dir: Direction, route: Route, x: f32, y: f32) -> vehicle::Vehicle {
+        vehicle::Vehicle::new(id, x, y, dir, route)
     }
 
-    fn approaching(id: u32, dir: Direction, x: f32, y: f32) -> Vehicle {
-        Vehicle::new(id, x, y, dir, Route::Straight)
-    }
-
-    // ── min_leader_gap_in_lane ────────────────────────────────────────────────
+    // ── axial_pos ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn leader_gap_max_when_no_vehicles() {
-        let gap = min_leader_gap_in_lane(0, Direction::North, 400.0, 700.0, &[]);
-        assert_eq!(gap, f32::MAX);
+    fn axial_pos_north_negates_y() {
+        assert_eq!(axial_pos(Direction::North, 0.0, 300.0), -300.0);
     }
 
     #[test]
-    fn leader_gap_ignores_wrong_direction() {
-        let s = vec![snap(
+    fn axial_pos_south_returns_y() {
+        assert_eq!(axial_pos(Direction::South, 0.0, 300.0), 300.0);
+    }
+
+    #[test]
+    fn axial_pos_east_returns_x() {
+        assert_eq!(axial_pos(Direction::East, 150.0, 0.0), 150.0);
+    }
+
+    #[test]
+    fn axial_pos_west_negates_x() {
+        assert_eq!(axial_pos(Direction::West, 150.0, 0.0), -150.0);
+    }
+
+    // ── build_lane_groups ─────────────────────────────────────────────────────
+
+    #[test]
+    fn build_lane_groups_separates_by_direction_and_route() {
+        let a = veh(0, Direction::North, Route::Straight, 400.0, 700.0);
+        let b = veh(1, Direction::North, Route::Right, 430.0, 700.0);
+        let c = veh(2, Direction::North, Route::Straight, 400.0, 600.0);
+        let groups = build_lane_groups(&[a, b, c]);
+        assert_eq!(
+            groups[&(Direction::North, Route::Straight)].len(),
+            2,
+            "N/Straight should have 2 vehicles"
+        );
+        assert_eq!(
+            groups[&(Direction::North, Route::Right)].len(),
             1,
-            Direction::South,
-            400.0,
-            600.0,
-            VehicleState::Approaching,
-        )];
-        let gap = min_leader_gap_in_lane(0, Direction::North, 400.0, 700.0, &s);
+            "N/Right should have 1 vehicle"
+        );
+    }
+
+    #[test]
+    fn build_lane_groups_sorted_ascending_by_axial_pos() {
+        // North axial_pos = -y. Vehicle at y=700 → pos=-700 (further back than y=600 → pos=-600).
+        let a = veh(0, Direction::North, Route::Straight, 400.0, 700.0);
+        let b = veh(1, Direction::North, Route::Straight, 400.0, 600.0);
+        let groups = build_lane_groups(&[a, b]);
+        let group = &groups[&(Direction::North, Route::Straight)];
+        assert_eq!(group[0].0, 0, "vehicle at y=700 (pos=-700) should be first");
+        assert_eq!(
+            group[1].0, 1,
+            "vehicle at y=600 (pos=-600) should be second"
+        );
+    }
+
+    #[test]
+    fn build_lane_groups_excludes_crossing_vehicles() {
+        let mut a = veh(0, Direction::North, Route::Straight, 400.0, 700.0);
+        a.state = VehicleState::Crossing;
+        let groups = build_lane_groups(&[a]);
+        assert!(!groups.contains_key(&(Direction::North, Route::Straight)));
+    }
+
+    #[test]
+    fn build_lane_groups_includes_waiting_vehicles() {
+        let mut a = veh(0, Direction::North, Route::Straight, 400.0, 482.0);
+        a.state = VehicleState::Waiting;
+        let groups = build_lane_groups(&[a]);
+        assert_eq!(groups[&(Direction::North, Route::Straight)].len(), 1);
+    }
+
+    // ── lane_leader_gap ───────────────────────────────────────────────────────
+
+    #[test]
+    fn lane_leader_gap_max_when_no_vehicles() {
+        let groups = build_lane_groups(&[]);
+        let gap = lane_leader_gap(0, Direction::North, Route::Straight, 400.0, 700.0, &groups);
         assert_eq!(gap, f32::MAX);
     }
 
     #[test]
-    fn leader_gap_ignores_self() {
-        let s = vec![snap(
-            0,
-            Direction::North,
-            400.0,
-            600.0,
-            VehicleState::Approaching,
-        )];
-        let gap = min_leader_gap_in_lane(0, Direction::North, 400.0, 700.0, &s);
+    fn lane_leader_gap_max_for_different_route() {
+        // Vehicle in N/Right lane — ego asking about N/Straight → different group.
+        let a = veh(1, Direction::North, Route::Right, 430.0, 600.0);
+        let groups = build_lane_groups(&[a]);
+        let gap = lane_leader_gap(0, Direction::North, Route::Straight, 400.0, 700.0, &groups);
         assert_eq!(gap, f32::MAX);
     }
 
     #[test]
-    fn leader_gap_ignores_vehicle_behind() {
-        // North direction: leader must be at smaller y (ahead). y=800 is behind y=700.
-        let s = vec![snap(
-            1,
-            Direction::North,
-            400.0,
-            800.0,
-            VehicleState::Approaching,
-        )];
-        let gap = min_leader_gap_in_lane(0, Direction::North, 400.0, 700.0, &s);
+    fn lane_leader_gap_ignores_self() {
+        let a = veh(0, Direction::North, Route::Straight, 400.0, 600.0);
+        let groups = build_lane_groups(&[a]);
+        let gap = lane_leader_gap(0, Direction::North, Route::Straight, 400.0, 700.0, &groups);
         assert_eq!(gap, f32::MAX);
     }
 
     #[test]
-    fn leader_gap_ignores_crossing_vehicles() {
-        let s = vec![snap(
-            1,
-            Direction::North,
-            400.0,
-            600.0,
-            VehicleState::Crossing,
-        )];
-        let gap = min_leader_gap_in_lane(0, Direction::North, 400.0, 700.0, &s);
+    fn lane_leader_gap_ignores_vehicle_behind() {
+        // For North (axial = -y), y=800 → pos=-800 is behind y=700 → pos=-700.
+        let a = veh(1, Direction::North, Route::Straight, 400.0, 800.0);
+        let groups = build_lane_groups(&[a]);
+        let gap = lane_leader_gap(0, Direction::North, Route::Straight, 400.0, 700.0, &groups);
         assert_eq!(gap, f32::MAX);
     }
 
     #[test]
-    fn leader_gap_returns_nearest_ahead() {
-        // Two vehicles ahead at 100 and 200 px axial distance.
-        let s = vec![
-            snap(1, Direction::North, 400.0, 600.0, VehicleState::Approaching), // 100 ahead
-            snap(2, Direction::North, 400.0, 500.0, VehicleState::Approaching), // 200 ahead
-        ];
-        let gap = min_leader_gap_in_lane(0, Direction::North, 400.0, 700.0, &s);
+    fn lane_leader_gap_ignores_crossing_vehicles() {
+        let mut a = veh(1, Direction::North, Route::Straight, 400.0, 600.0);
+        a.state = VehicleState::Crossing;
+        let groups = build_lane_groups(&[a]);
+        let gap = lane_leader_gap(0, Direction::North, Route::Straight, 400.0, 700.0, &groups);
+        assert_eq!(gap, f32::MAX);
+    }
+
+    #[test]
+    fn lane_leader_gap_returns_nearest_ahead() {
+        // North: two vehicles ahead at 100 and 200 px axial distance.
+        let a = veh(1, Direction::North, Route::Straight, 400.0, 600.0); // 100 ahead
+        let b = veh(2, Direction::North, Route::Straight, 400.0, 500.0); // 200 ahead
+        let groups = build_lane_groups(&[a, b]);
+        let gap = lane_leader_gap(0, Direction::North, Route::Straight, 400.0, 700.0, &groups);
         assert!((gap - 100.0).abs() < 1.0, "expected 100, got {gap}");
     }
 
@@ -471,81 +493,26 @@ mod tests {
         assert!(speed <= Speed::FAST_PX);
     }
 
-    // ── is_following_violation ────────────────────────────────────────────────
-
-    #[test]
-    fn following_violation_true_when_too_close() {
-        // Axial distance 50 < MIN_FOLLOWING_GAP (72).
-        let a = approaching(0, Direction::North, 400.0, 700.0);
-        let b = approaching(1, Direction::North, 400.0, 650.0);
-        assert!(is_following_violation(&a, &b));
-    }
-
-    #[test]
-    fn following_violation_false_when_far_enough() {
-        // Axial distance 200 > MIN_FOLLOWING_GAP.
-        let a = approaching(0, Direction::North, 400.0, 700.0);
-        let b = approaching(1, Direction::North, 400.0, 500.0);
-        assert!(!is_following_violation(&a, &b));
-    }
-
-    #[test]
-    fn following_violation_false_for_different_directions() {
-        let a = approaching(0, Direction::North, 400.0, 700.0);
-        let b = approaching(1, Direction::South, 400.0, 650.0);
-        assert!(!is_following_violation(&a, &b));
-    }
-
-    #[test]
-    fn following_violation_false_when_transversely_separated() {
-        // Same direction but in different lanes (> 20 px apart transversely).
-        let a = approaching(0, Direction::North, 400.0, 700.0);
-        let b = approaching(1, Direction::North, 430.0, 650.0); // 30 px apart in x
-        assert!(!is_following_violation(&a, &b));
-    }
-
-    #[test]
-    fn following_violation_false_when_either_is_crossing() {
-        let a = approaching(0, Direction::North, 400.0, 700.0);
-        let mut b = approaching(1, Direction::North, 400.0, 650.0);
-        b.state = VehicleState::Crossing;
-        assert!(!is_following_violation(&a, &b));
-    }
-
     // ── approach_target_speed ─────────────────────────────────────────────────
 
     #[test]
     fn approach_speed_fast_far_from_stop_line() {
-        // North: stop line at cy + rw = 400 + 82 = 482. Vehicle at y=900 → dist=418 > 200.
-        let speed = approach_target_speed(0, Direction::North, 400.0, 900.0, &[]);
-        assert_eq!(speed, Speed::FAST_PX);
+        assert_eq!(approach_target_speed(418.0, f32::MAX), Speed::FAST_PX);
     }
 
     #[test]
     fn approach_speed_normal_at_medium_distance() {
-        // y=600 → dist = 600 - 482 = 118, between 80 and 200.
-        let speed = approach_target_speed(0, Direction::North, 400.0, 600.0, &[]);
-        assert_eq!(speed, Speed::NORMAL_PX);
+        assert_eq!(approach_target_speed(118.0, f32::MAX), Speed::NORMAL_PX);
     }
 
     #[test]
     fn approach_speed_slow_near_stop_line() {
-        // y=520 → dist = 520 - 482 = 38 < 80.
-        let speed = approach_target_speed(0, Direction::North, 400.0, 520.0, &[]);
-        assert_eq!(speed, Speed::SLOW_PX);
+        assert_eq!(approach_target_speed(38.0, f32::MAX), Speed::SLOW_PX);
     }
 
     #[test]
     fn approach_speed_capped_by_close_leader() {
-        // Vehicle far from stop line but has a leader very close ahead.
-        let s = vec![snap(
-            1,
-            Direction::North,
-            400.0,
-            860.0, // 60 px ahead of vehicle at 920 → gap < 80 → SLOW
-            VehicleState::Approaching,
-        )];
-        let speed = approach_target_speed(0, Direction::North, 400.0, 920.0, &s);
-        assert_eq!(speed, Speed::SLOW_PX);
+        // Leader gap 60 < 80 dominates over dist_to_stop 500 → SLOW.
+        assert_eq!(approach_target_speed(500.0, 60.0), Speed::SLOW_PX);
     }
 }

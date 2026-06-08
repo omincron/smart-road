@@ -49,6 +49,7 @@ const CONFLICTS: [[bool; 12]; 12] = [
 // ── Crossing waypoints ────────────────────────────────────────────────────────
 // Pre-computed (x, y) waypoints for each (direction, route) through the box.
 // Coordinates use renderer constants so they stay in sync with the road layout.
+#[must_use]
 pub fn crossing_waypoints(direction: Direction, route: Route) -> Vec<(f32, f32)> {
     let cx = CENTER_X as f32;
     let cy = CENTER_Y as f32;
@@ -103,6 +104,7 @@ pub fn crossing_waypoints(direction: Direction, route: Route) -> Vec<(f32, f32)>
 }
 
 /// Total geometric path length through the intersection for a given (direction, route).
+#[must_use]
 pub fn crossing_path_length(direction: Direction, route: Route) -> f32 {
     let pts = crossing_waypoints(direction, route);
     pts.windows(2)
@@ -115,6 +117,7 @@ pub fn crossing_path_length(direction: Direction, route: Route) -> f32 {
 }
 
 /// Direction the vehicle is heading after it exits the intersection.
+#[must_use]
 pub fn exit_direction(direction: Direction, route: Route) -> Direction {
     match route {
         Route::Straight => direction,
@@ -135,6 +138,7 @@ pub fn exit_direction(direction: Direction, route: Route) -> Direction {
 
 // ── Stop-line detection ───────────────────────────────────────────────────────
 /// Remaining distance (px) to the stop line. Always positive while approaching.
+#[must_use]
 pub fn dist_to_stop_line(direction: Direction, x: f32, y: f32) -> f32 {
     let cx = CENTER_X as f32;
     let cy = CENTER_Y as f32;
@@ -148,6 +152,7 @@ pub fn dist_to_stop_line(direction: Direction, x: f32, y: f32) -> f32 {
 }
 
 /// True once an approaching vehicle's front has reached its stop line.
+#[must_use]
 pub fn at_stop_line(direction: Direction, x: f32, y: f32) -> bool {
     let cx = CENTER_X as f32;
     let cy = CENTER_Y as f32;
@@ -222,7 +227,7 @@ impl IntersectionManager {
             if current_tick <= entry + GRACE_TICKS
                 && current_tick < self.reservations[pos].exit_tick
             {
-                let ticks_left = (entry as i64 - current_tick as i64).max(1) as f32;
+                let ticks_left = entry.saturating_sub(current_tick).max(1) as f32;
                 let speed = (dist_to_stop / ticks_left).clamp(Speed::SLOW_PX, Speed::FAST_PX);
                 return Some((entry, speed));
             }
@@ -364,6 +369,93 @@ mod tests {
         ] {
             for (other, &conflict) in CONFLICTS[r].iter().enumerate() {
                 assert!(!conflict, "right turn {r} conflicts with {other}");
+            }
+        }
+    }
+
+    // ── conflict table geometric correctness ──────────────────────────────────
+
+    /// Compute the axis-aligned bounding box (min_x, min_y, max_x, max_y) of a path.
+    fn path_aabb(direction: Direction, route: Route) -> (f32, f32, f32, f32) {
+        let pts = crossing_waypoints(direction, route);
+        let min_x = pts.iter().map(|p| p.0).fold(f32::MAX, f32::min);
+        let min_y = pts.iter().map(|p| p.1).fold(f32::MAX, f32::min);
+        let max_x = pts.iter().map(|p| p.0).fold(f32::MIN, f32::max);
+        let max_y = pts.iter().map(|p| p.1).fold(f32::MIN, f32::max);
+        (min_x, min_y, max_x, max_y)
+    }
+
+    fn aabbs_overlap(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+        // Allow a small tolerance so endpoints that just touch count as overlapping.
+        const TOL: f32 = 2.0;
+        a.0 <= b.2 + TOL && b.0 <= a.2 + TOL && a.1 <= b.3 + TOL && b.1 <= a.3 + TOL
+    }
+
+    /// All 12 (direction, route) combinations in path-index order.
+    fn all_paths() -> [(Direction, Route); 12] {
+        [
+            (Direction::South, Route::Right),
+            (Direction::South, Route::Straight),
+            (Direction::South, Route::Left),
+            (Direction::North, Route::Right),
+            (Direction::North, Route::Straight),
+            (Direction::North, Route::Left),
+            (Direction::West, Route::Right),
+            (Direction::West, Route::Straight),
+            (Direction::West, Route::Left),
+            (Direction::East, Route::Right),
+            (Direction::East, Route::Straight),
+            (Direction::East, Route::Left),
+        ]
+    }
+
+    /// Every pair marked `true` in CONFLICTS must have overlapping waypoint AABBs.
+    #[test]
+    fn conflicts_table_marked_true_implies_aabb_overlap() {
+        let paths = all_paths();
+        for (i, &(di, ri)) in paths.iter().enumerate() {
+            for (j, &(dj, rj)) in paths.iter().enumerate() {
+                if CONFLICTS[i][j] {
+                    let a = path_aabb(di, ri);
+                    let b = path_aabb(dj, rj);
+                    assert!(
+                        aabbs_overlap(a, b),
+                        "CONFLICTS[{i}][{j}] is true but AABBs do not overlap: \
+                         ({di:?},{ri:?}) = {a:?}  vs  ({dj:?},{rj:?}) = {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Representative spot-check: straight paths that cross each other must conflict.
+    #[test]
+    fn straight_through_pairs_conflict() {
+        // S_s (1) vs N_l (5) — southbound straight crosses northbound left-turn path.
+        assert!(CONFLICTS[1][5], "S_straight vs N_left must conflict");
+        // S_s (1) vs W_s (7) — southbound straight crosses westbound straight.
+        assert!(CONFLICTS[1][7], "S_straight vs W_straight must conflict");
+        // W_s (7) vs E_l (11) — westbound straight crosses eastbound left-turn path.
+        assert!(CONFLICTS[7][11], "W_straight vs E_left must conflict");
+        // N_s (4) vs W_l (8) — northbound straight crosses westbound left-turn path.
+        assert!(CONFLICTS[4][8], "N_straight vs W_left must conflict");
+    }
+
+    /// Right-turn pairs from any combination of directions must not conflict with each other.
+    #[test]
+    fn right_turn_pairs_never_conflict() {
+        let right_indices = [
+            path_index(Direction::South, Route::Right),
+            path_index(Direction::North, Route::Right),
+            path_index(Direction::West, Route::Right),
+            path_index(Direction::East, Route::Right),
+        ];
+        for &i in &right_indices {
+            for &j in &right_indices {
+                assert!(
+                    !CONFLICTS[i][j],
+                    "right-turn pair ({i}, {j}) must not conflict"
+                );
             }
         }
     }

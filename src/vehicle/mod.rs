@@ -54,6 +54,7 @@ pub struct Vehicle {
     // stats — filled in as simulation progresses
     pub detection_tick: Option<u64>, // None until vehicle first reaches the stop line
     pub exit_tick: Option<u64>,
+    pub distance: f64, // total odometer distance travelled (px), accumulated each tick
 }
 
 impl Vehicle {
@@ -73,13 +74,18 @@ impl Vehicle {
             waypoint_idx: 0,
             detection_tick: None,
             exit_tick: None,
+            distance: 0.0,
         }
     }
 
     /// Transit time in ticks from first stop-line detection to off-screen exit.
+    #[must_use]
     pub fn transit_ticks(&self) -> Option<u64> {
         match (self.detection_tick, self.exit_tick) {
-            (Some(d), Some(e)) => Some(e - d),
+            (Some(d), Some(e)) => {
+                debug_assert!(e >= d, "exit_tick ({e}) < detection_tick ({d})");
+                Some(e.saturating_sub(d))
+            }
             _ => None,
         }
     }
@@ -98,6 +104,7 @@ impl Vehicle {
             Direction::East => self.x += d,
             Direction::West => self.x -= d,
         }
+        self.distance += d as f64;
     }
 
     /// Move one tick along the pre-computed crossing path.
@@ -117,12 +124,14 @@ impl Vehicle {
             self.angle_deg = (dx.atan2(-dy).to_degrees() + 360.0) % 360.0;
             self.x = tx;
             self.y = ty;
+            self.distance += dist as f64;
             self.waypoint_idx += 1;
             self.waypoint_idx >= self.crossing_path.len()
         } else {
             self.x += dx / dist * speed;
             self.y += dy / dist * speed;
             self.angle_deg = (dx.atan2(-dy).to_degrees() + 360.0) % 360.0;
+            self.distance += speed as f64;
             false
         }
     }

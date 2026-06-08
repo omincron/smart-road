@@ -60,6 +60,7 @@ impl StatsAccumulator {
     }
 
     /// Returns stat lines ready to render on screen.
+    #[must_use]
     pub fn stat_lines(&self) -> Vec<String> {
         const FPS: f32 = 60.0;
         let mut v = Vec::new();

@@ -2,11 +2,8 @@ use rand::Rng;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 
-use crate::renderer::{LANE_W, ROAD_W, WINDOW_H, WINDOW_W};
+use crate::renderer::{CENTER_X, CENTER_Y, LANE_W, ROAD_W, WINDOW_H, WINDOW_W};
 use crate::vehicle::{Direction, Route, Vehicle};
-
-const CENTER_X: i32 = WINDOW_W as i32 / 2;
-const CENTER_Y: i32 = WINDOW_H as i32 / 2;
 
 const RANDOM_INTERVAL: u32 = 30; // ticks between random spawns (~0.5 s at 60 fps)
 
@@ -75,11 +72,15 @@ impl InputHandler {
         let route = random_route(rng);
         let (sx, sy) = spawn_pos(direction, route);
 
-        // Block if any existing vehicle is within the minimum following gap of the spawn point.
+        // Block if any existing vehicle in the same direction is within the minimum
+        // following gap of the spawn point. Vehicles in perpendicular lanes are excluded
+        // to avoid blocking spawns that would not actually cause a conflict.
         let blocked = vehicles.iter().any(|v| {
-            let dx = v.x - sx;
-            let dy = v.y - sy;
-            (dx * dx + dy * dy).sqrt() < crate::vehicle::physics::MIN_FOLLOWING_GAP
+            v.direction == direction && {
+                let dx = v.x - sx;
+                let dy = v.y - sy;
+                (dx * dx + dy * dy).sqrt() < crate::vehicle::physics::MIN_FOLLOWING_GAP
+            }
         });
 
         if !blocked {

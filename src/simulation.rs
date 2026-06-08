@@ -108,7 +108,9 @@ pub fn step_simulation(
     manager.cleanup_expired(tick);
 
     for v in vehicles.iter_mut() {
-        stats.record_speed(v.current_speed);
+        if v.state != VehicleState::Done {
+            stats.record_speed(v.current_speed);
+        }
 
         match v.state {
             VehicleState::Approaching => {

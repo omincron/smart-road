@@ -13,7 +13,6 @@ pub const WINDOW_H: u32 = 800;
 pub const CENTER_X: i32 = WINDOW_W as i32 / 2; // 400
 pub const CENTER_Y: i32 = WINDOW_H as i32 / 2; // 400
 pub const ROAD_W: i32 = 82; // half-width of road from center - matched to cross-road.png
-pub const LANE_W: i32 = ROAD_W / 3; // 27px per lane
 
 // Tiny bitmap font used for HUD and overlay text. This keeps the app free of
 // native SDL_ttf linkage while still rendering readable labels.

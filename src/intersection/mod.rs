@@ -173,7 +173,8 @@ pub const RESERVATION_DIST: f32 = 300.0;
 const CROSSING_SPEED: f32 = Speed::NORMAL_PX;
 
 /// Extra ticks added to crossing window to absorb speed-smoothing imprecision.
-const GRACE_TICKS: u64 = 10;
+/// 20 gives ~12 ticks of real margin on the worst-case left-turn path from speed=0.
+const GRACE_TICKS: u64 = 20;
 
 /// Extra search window beyond the maximum slow-speed arrival time.
 /// Gives the AIM scheduler room to find a slot even when the intersection is busy.

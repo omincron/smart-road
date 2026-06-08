@@ -2,7 +2,7 @@ use rand::Rng;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 
-use crate::renderer::{CENTER_X, CENTER_Y, LANE_W, ROAD_W, WINDOW_H, WINDOW_W};
+use crate::renderer::{CENTER_X, CENTER_Y, ROAD_W, WINDOW_H, WINDOW_W};
 use crate::vehicle::{Direction, Route, Vehicle};
 
 const RANDOM_INTERVAL: u32 = 30; // ticks between random spawns (~0.5 s at 60 fps)
@@ -94,29 +94,29 @@ impl InputHandler {
 /// Entry (x, y) position for a vehicle with the given direction and route.
 /// Vehicles spawn just off-screen at the correct lane centre.
 pub fn spawn_pos(direction: Direction, route: Route) -> (f32, f32) {
-    let idx = lane_index(direction, route);
+    let idx = lane_index(direction, route) as f32;
+    let lw = ROAD_W as f32 / 3.0; // float division matches crossing_waypoints exactly
     match direction {
         Direction::South => {
-            let x = CENTER_X - ROAD_W + idx * LANE_W + LANE_W / 2;
-            (x as f32, -20.0)
+            let x = CENTER_X as f32 - ROAD_W as f32 + idx * lw + lw / 2.0;
+            (x, -20.0)
         }
         Direction::North => {
-            let x = CENTER_X + idx * LANE_W + LANE_W / 2;
-            (x as f32, WINDOW_H as f32 + 20.0)
+            let x = CENTER_X as f32 + idx * lw + lw / 2.0;
+            (x, WINDOW_H as f32 + 20.0)
         }
         Direction::West => {
-            let y = CENTER_Y - ROAD_W + idx * LANE_W + LANE_W / 2;
-            (WINDOW_W as f32 + 20.0, y as f32)
+            let y = CENTER_Y as f32 - ROAD_W as f32 + idx * lw + lw / 2.0;
+            (WINDOW_W as f32 + 20.0, y)
         }
         Direction::East => {
-            let y = CENTER_Y + idx * LANE_W + LANE_W / 2;
-            (-20.0, y as f32)
+            let y = CENTER_Y as f32 + idx * lw + lw / 2.0;
+            (-20.0, y)
         }
     }
 }
 
 /// 0-based lane index counting from the outer edge of the road inward.
-/// Multiply by LANE_W to convert to a pixel offset from the road edge.
 pub fn lane_index(direction: Direction, route: Route) -> i32 {
     match direction {
         // Outer-to-inner order: right, straight, left
